@@ -60,6 +60,11 @@ LD_PATH :=
 LD_LINK := comctl32 crypt32 dbghelp ole32 sensapi shlwapi uuid uxtheme version wininet wintrust dwmapi bcrypt
 LD_LINK += $(patsubst lib%.a,%,$(SCINTILLA_TARGET)) $(patsubst lib%.a,%,$(LEXILLA_TARGET)) imm32 msimg32 ole32 oleaut32
 SUBMAKEFLAGS := -O --no-print-directory
+ifneq "$(CROSS_COMPILE)" ""
+AR := $(CROSS_COMPILE)ar
+RANLIB := $(CROSS_COMPILE)ranlib
+SUBMAKEFLAGS += CXX="$(CXX)" AR="$(AR)" RANLIB="$(RANLIB)"
+endif
 
 # detect a request for a debug build
 ifeq "$(filter-out 0,$(DEBUG))" ""
@@ -216,7 +221,8 @@ CPDIR := cp -r
 RMDIR := rm -rf
 CP := cp
 RM := rm -f
-PREBUILD_EVENT_CMD := cmd //C "$(MAKEFILE_ABS_DIR)/../src/NppLibsVersionH-generator.bat"
+NPP_LIBS_VERSION_HEADER := $(BUILD_DIRECTORY)/NppLibsVersion.h
+CPP_PATH += $(BUILD_DIRECTORY)
 normalize-path = $1
 else ifneq "$(wildcard $(dir $(SHELL))ls.exe)" ""
 # a Windows system with a proper shell
@@ -278,7 +284,7 @@ thirdparty_flags = $(if $(filter $(foreach d,$(THIRD_DIRS),$(d)/%),$(1)), -w -Wp
 # actions
 #
 
-.PHONY: .force all binary data clean sciclean lexclean fullclean
+.PHONY: .force all pre-build-event binary data clean sciclean lexclean fullclean
 .force:
 
 SUBMAKEFLAGS += $(if $(NUMBER_OF_PROCESSORS),-j$(NUMBER_OF_PROCESSORS),)
@@ -286,9 +292,21 @@ SUBMAKEFLAGS += $(if $(NUMBER_OF_PROCESSORS),-j$(NUMBER_OF_PROCESSORS),)
 all: pre-build-event $(SCINTILLA_TARGET) $(LEXILLA_TARGET)
 	$(AT)$(MAKE) -f $(firstword $(MAKEFILE_LIST)) $(SUBMAKEFLAGS) binary
 
+ifeq "$(WIN_DIR)" ""
+pre-build-event: $(NPP_LIBS_VERSION_HEADER)
+
+$(NPP_LIBS_VERSION_HEADER): $(SCINTILLA_DIRECTORY)/win32/ScintRes.rc $(LEXILLA_DIRECTORY)/src/LexillaVersion.rc $(MAKEFILE_ABS_DIR)/../../boostregex/boost/version.hpp | $(BUILD_DIRECTORY)
+	@echo + generating $@
+	$(AT)sed -n \
+		-e 's/^#define VERSION_SCINTILLA \("[^"]*"\).*/#define NPP_SCINTILLA_VERSION \1/p' \
+		-e 's/^#define VERSION_LEXILLA \("[^"]*"\).*/#define NPP_LEXILLA_VERSION \1/p' \
+		-e 's/^#define BOOST_LIB_VERSION \("[^"]*"\).*/#define NPP_BOOST_REGEX_VERSION \1/p' \
+		$^ > $@.tmp && mv $@.tmp $@
+else
 pre-build-event:
 	@echo Executing pre-build events...
 	$(AT)$(PREBUILD_EVENT_CMD)
+endif
 
 $(BUILD_DIRECTORY):
 	@echo + creating BUILD_DIRECTORY $@
@@ -319,6 +337,8 @@ binary: $(TARGET_BINARY) data
 $(CXX_TARGETS): $(BUILD_DIRECTORY)/%.o: %.cpp | $(BUILD_DIRECTORY)
 	@echo + compiling $<
 	$(AT)$(CXX) $(CXXFLAGS) $(call thirdparty_flags,$<) $(addprefix -I,$(CPP_PATH)) $(addprefix -D,$(CPP_DEFINE)) -MMD -c -o $@ $<
+
+$(BUILD_DIRECTORY)/WinControls/AboutDlg/AboutDlg.o: $(NPP_LIBS_VERSION_HEADER)
 
 $(RC_TARGETS): $(BUILD_DIRECTORY)/%.res: %.rc | $(BUILD_DIRECTORY)
 	@echo + compiling $<

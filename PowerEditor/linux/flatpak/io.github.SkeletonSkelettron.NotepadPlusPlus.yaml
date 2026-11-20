@@ -1,0 +1,61 @@
+id: io.github.SkeletonSkelettron.NotepadPlusPlus
+branch: stable
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.dotnet10
+command: notepad++
+finish-args:
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --device=dri
+  - --filesystem=home
+build-options:
+  append-path: /usr/lib/sdk/dotnet10/bin
+  append-ld-library-path: /usr/lib/sdk/dotnet10/lib
+cleanup:
+  - /lib/dotnet/shared/Microsoft.AspNetCore.App
+modules:
+  - name: notepad-plus-plus
+    buildsystem: simple
+    build-commands:
+      - /usr/lib/sdk/dotnet10/bin/dotnet --list-sdks
+      - cmake -S PowerEditor/linux -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app -DNPP_BUILD_TESTS=ON
+      - cmake --build _build --parallel "$FLATPAK_BUILDER_N_JOBS"
+      - cmake --install _build
+      - test -f /app/lib/notepad++/plugins/JsonTools/JsonToolsEngine.dll
+      - /usr/lib/sdk/dotnet10/bin/install.sh
+      - >-
+        sed -e "s|^Icon=.*|Icon=${FLATPAK_ID}|"
+        /app/share/applications/notepad-plus-plus.desktop
+        > "/app/share/applications/${FLATPAK_ID}.desktop"
+      - rm /app/share/applications/notepad-plus-plus.desktop
+      - install -Dm644 "PowerEditor/linux/flatpak/${FLATPAK_ID}.png" "/app/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+      - install -Dm644 "PowerEditor/linux/flatpak/${FLATPAK_ID}.metainfo.xml" "/app/share/metainfo/${FLATPAK_ID}.metainfo.xml"
+      - install -Dm644 /usr/lib/sdk/dotnet10/lib/LICENSE.txt "/app/share/licenses/${FLATPAK_ID}/dotnet-LICENSE.txt"
+      - install -Dm644 /usr/lib/sdk/dotnet10/lib/ThirdPartyNotices.txt "/app/share/licenses/${FLATPAK_ID}/dotnet-ThirdPartyNotices.txt"
+    run-tests: true
+    test-rule: ''
+    test-commands:
+      - ctest --test-dir _build --output-on-failure
+    license-files:
+      - LICENSE
+      - scintilla/License.txt
+      - PowerEditor/linux/plugins/JsonTools/backend/LICENSE.md
+    sources:
+      - type: dir
+        path: ../..
+        dest: PowerEditor
+      - type: dir
+        path: ../../../scintilla
+        dest: scintilla
+      - type: dir
+        path: ../../../lexilla
+        dest: lexilla
+      - type: dir
+        path: ../../../boostregex
+        dest: boostregex
+      - type: file
+        path: ../../../LICENSE

@@ -1,5 +1,7 @@
 # Building Notepad++
 
+For the native Fedora application, see the [Linux Qt 6 build guide](PowerEditor/linux/README.md).
+
 ## Microsoft Visual Studio
 
 **Pre-requisites:**
@@ -72,3 +74,18 @@ Building Notepad++ is regularly tested on a Windows system by using [MSYS2](http
 - When a project is built through MinGW-w64 with multilib support, a specific target can be forced by passing `TARGET_CPU` variable with `x86_64` or `i686` as value.
 - To use Clang instead of GCC for compilation provide `CXX` variable with `clang++` as value.
 - To use [Clang analyzer](https://clang-analyzer.llvm.org/) together with Clang provide `CLANGANALYZE=1` to the `mingw32-make` invocation.
+
+### Cross-build the Windows x64 portable version on Fedora
+
+From the repository root, build the Win32 frontend with Fedora's MinGW-w64 toolchain.
+
+```bash
+sudo dnf install make mingw64-gcc-c++ mingw64-binutils
+mkdir -p build-windows
+make -C build-windows -f "$PWD/PowerEditor/gcc/makefile" -j"$(nproc)" \
+    CROSS_COMPILE=x86_64-w64-mingw32- all
+```
+
+Copy `build-windows/bin.gcc.x86_64/` to a writable folder on Windows and run
+`notepad++.exe` from that folder. The build copies the editor's data files and
+enables portable settings with `doLocalConf.xml`.

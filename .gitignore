@@ -161,6 +161,11 @@ PowerEditor/bin/SourceCodePro-Regular.ttf
 bin.*
 scintilla/win32/*.o
 
+# Local port builds and plugin source checkouts
+/build-linux/
+/build-windows/
+/plugins-src/
+
 
 PowerEditor/src/MISC/md5/RCa06792
 *.db
