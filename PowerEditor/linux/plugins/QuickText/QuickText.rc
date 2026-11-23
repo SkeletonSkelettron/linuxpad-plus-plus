@@ -1,0 +1,184 @@
+// Microsoft Visual C++ generated resource script.
+//
+#include "resource.h"
+
+#define APSTUDIO_READONLY_SYMBOLS
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 2 resource.
+//
+//#include "afxres.h"
+#include <windows.h>
+
+#ifndef IDC_STATIC
+#define IDC_STATIC -1
+#endif
+
+/////////////////////////////////////////////////////////////////////////////
+#undef APSTUDIO_READONLY_SYMBOLS
+
+/////////////////////////////////////////////////////////////////////////////
+// English (U.S.) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_ENU)
+#ifdef _WIN32
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+#pragma code_page(1252)
+#endif //_WIN32
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Version
+//
+
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION VER_MAJOR,VER_MINOR,VER_RELEASE,VER_BUILD
+PRODUCTVERSION VER_MAJOR,VER_MINOR,VER_RELEASE,VER_BUILD
+FILEFLAGSMASK 0x17L
+#ifdef _DEBUG
+ FILEFLAGS 0x1L
+#else
+ FILEFLAGS 0x0L
+#endif
+ FILEOS 0x4L
+ FILETYPE 0x2L
+ FILESUBTYPE 0x0L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904E4"
+        BEGIN
+            VALUE "FileDescription",  FILE_DESCRIPTION
+            VALUE "InternalName",     INTERNAL_NAME
+
+            VALUE "CompanyName",      COMPANY_NAME
+            VALUE "FileVersion",      VER_STRING
+            VALUE "LegalCopyright",   LEGAL_COPYRIGHT
+            VALUE "LegalTrademarks",  LEGAL_TRADEMARKS
+            VALUE "OriginalFilename", ORIGINAL_FILENAME
+            VALUE "ProductName",      PRODUCT_NAME
+            VALUE "ProductVersion",   VER_STRING
+            VALUE "Comments",         "GNU Public General Licence"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x0409, 1252
+    END
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// Dialog
+//
+
+IDD_DLGCONFIG DIALOGEX 0, 0, 430, 180
+STYLE DS_SHELLFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU | WS_SIZEBOX
+CAPTION "QuickText"
+FONT 8, "MS Shell Dlg", 0, 0, 0x0
+BEGIN
+    CONTROL "&OK",IDOK,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_DEFPUSHBUTTON,10,157,36,14
+    CONTROL "",IDLANG_CB,"ComboBox",WS_CHILDWINDOW|WS_VISIBLE|WS_VSCROLL|WS_TABSTOP|CBS_NOINTEGRALHEIGHT|CBS_SORT|CBS_AUTOHSCROLL|CBS_DROPDOWNLIST,133,7,74,131
+    CONTROL "Sni&ps",IDC_STATIC,"Button",WS_CHILDWINDOW|WS_VISIBLE|BS_GROUPBOX,133,28,74,139
+    CONTROL "",IDSNIP,"ListBox",WS_CHILDWINDOW|WS_VISIBLE|WS_VSCROLL|WS_TABSTOP|LBS_NOINTEGRALHEIGHT|LBS_SORT|LBS_NOTIFY,133,44,74,129,WS_EX_CLIENTEDGE
+    CONTROL "Substitution Te&xt",IDC_STATIC,"Button",WS_CHILDWINDOW|WS_VISIBLE|BS_GROUPBOX,220,28,202,125
+    CONTROL "",IDTEXT,"Edit",WS_CHILDWINDOW|WS_VISIBLE|WS_VSCROLL|WS_HSCROLL|WS_TABSTOP|ES_WANTRETURN|ES_AUTOHSCROLL|ES_MULTILINE,220,44,202,129,WS_EX_CLIENTEDGE
+    CONTROL "&Snip:",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,220,9,36,8
+    CONTROL "",IDSNIPNAME,"Edit",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|ES_AUTOHSCROLL,245,7,76,13,WS_EX_CLIENTEDGE
+    CONTROL "Add/Modify",IDADD,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP,328,7,53,14
+    CONTROL "&Delete",IDDEL,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP,388,7,34,14
+    CONTROL "&Use Scintilla Autocomplete",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,22,7,100,11
+    CONTROL "",IDC_CHK_USA,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,10,7,10,9
+    CONTROL "Auto &Insert Autocomplete",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,22,22,100,11
+    CONTROL "",IDC_CHK_AIA,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,10,22,10,9
+    CONTROL "Con&vert Tabs (N++ setting)",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,22,37,100,11
+    CONTROL "",IDC_CHK_CT,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,10,37,10,9
+    CONTROL "Use &Fixed Font",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,22,52,100,11
+    CONTROL "",IDC_CHK_FF,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,10,52,10,9
+    CONTROL "Use &N++ Colors",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,22,67,100,11
+    CONTROL "",IDC_CHK_NPC,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,10,67,10,9
+    CONTROL "Confirm &before close",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_GROUP,22,82,100,11
+    CONTROL "",IDC_CHK_CBC,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|BS_AUTOCHECKBOX,10,82,10,9
+    CONTROL "Version",IDC_STATIC,"Static",WS_CHILDWINDOW|WS_VISIBLE|WS_DISABLED|WS_GROUP,10,142,30,11
+    CONTROL "<a></a>",IDC_STC_VER,"SysLink",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP|LWS_TRANSPARENT,40,142,40,11
+    CONTROL "&Cancel",IDCANCEL,"Button",WS_CHILDWINDOW|WS_VISIBLE|WS_TABSTOP,52,157,36,14
+END
+
+
+/////////////////////////////////////////////////////////////////////////////
+//
+// DESIGNINFO
+//
+
+#ifdef APSTUDIO_INVOKED
+GUIDELINES DESIGNINFO
+BEGIN
+    IDD_DLGCONFIG, DIALOG
+    BEGIN
+        LEFTMARGIN, 7
+        RIGHTMARGIN, 296
+        VERTGUIDE, 15
+        VERTGUIDE, 94
+        TOPMARGIN, 7
+        BOTTOMMARGIN, 195
+        HORZGUIDE, 20
+        HORZGUIDE, 23
+        HORZGUIDE, 28
+        HORZGUIDE, 162
+    END
+END
+#endif    // APSTUDIO_INVOKED
+
+#endif    // English (U.S.) resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+/////////////////////////////////////////////////////////////////////////////
+// Portuguese (Portugal) resources
+
+#if !defined(AFX_RESOURCE_DLL) || defined(AFX_TARG_PTG)
+#ifdef _WIN32
+LANGUAGE LANG_PORTUGUESE, SUBLANG_PORTUGUESE
+#pragma code_page(1252)
+#endif //_WIN32
+
+#ifdef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// TEXTINCLUDE
+//
+
+1 TEXTINCLUDE
+BEGIN
+    "resource.h\0"
+END
+
+2 TEXTINCLUDE
+BEGIN
+    "#include ""afxres.h""\r\n"
+    "\0"
+END
+
+3 TEXTINCLUDE
+BEGIN
+    "\r\n"
+    "\0"
+END
+
+#endif    // APSTUDIO_INVOKED
+
+#endif    // Portuguese (Portugal) resources
+/////////////////////////////////////////////////////////////////////////////
+
+
+
+#ifndef APSTUDIO_INVOKED
+/////////////////////////////////////////////////////////////////////////////
+//
+// Generated from the TEXTINCLUDE 3 resource.
+//
+
+
+/////////////////////////////////////////////////////////////////////////////
+#endif    // not APSTUDIO_INVOKED

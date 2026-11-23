@@ -1,0 +1,217 @@
+/*
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  You can obtain one at https://mozilla.org/MPL/2.0/.
+
+  Copyright (c) 2024 Robert Di Pardo <dipardo.r@gmail.com>
+*/
+#include "Internal.h"
+#include "TextConv.h"
+#include "PluginBase.h"
+
+constexpr uintptr_t MAX_WIDE_PATH = 0x7fffULL;
+
+using namespace SciTextObjects;
+
+/////////////////////////////////////////////////////////////////////////////////////////
+namespace {
+path_t getModulePath(HMODULE hInstace);
+}
+
+// --------------------------------------------------------------------------------------
+// PluginBase
+// --------------------------------------------------------------------------------------
+PluginBase::~PluginBase() {
+	// (funcItems.~FuncArray() was called here: the member is destroyed after this destructor,
+	// the second destruction freed its vectors again)
+}
+// --------------------------------------------------------------------------------------
+void PluginBase::setInfo(const NppData *data) {
+	_data = *data;
+	int versionWords = static_cast<int>(sendNppMessage(NPPM_GETNPPVERSION));
+	div_t loWords = ::div((versionWords & 0xffff) * 10, 10);
+	while (loWords.quot > 9) {
+		_nppVersion.build = loWords.rem;
+		loWords = ::div(loWords.quot, 10);
+	}
+	_nppVersion.major = ((versionWords >> 0x10) & 0xffff);
+	_nppVersion.minor = loWords.quot;
+	_nppVersion.revision = loWords.rem;
+	_editor = SciApplication::getApplication(data, apiLevel());
+}
+// --------------------------------------------------------------------------------------
+HWND PluginBase::currentScintilla() const {
+	DWORD_PTR index = 0;
+	sendNppMessage(NPPM_GETCURRENTSCINTILLA, UNUSEDW, &index);
+	return (index > 0) ? _data._scintillaSecondHandle : _data._scintillaMainHandle;
+}
+// --------------------------------------------------------------------------------------
+LRESULT PluginBase::sendNppMessage(const UINT msg, WPARAM wparam, LPARAM lparam) const {
+	return SendMessageW(_data._nppHandle, msg, wparam, lparam);
+}
+// --------------------------------------------------------------------------------------
+LRESULT PluginBase::sendNppMessage(const UINT msg, WPARAM wparam, void *lparam) const {
+	return sendNppMessage(msg, wparam, reinterpret_cast<LPARAM>(lparam));
+}
+// --------------------------------------------------------------------------------------
+SciApiLevel PluginBase::apiLevel() const {
+	if (hasMultiSelectionModeApis())
+		return SciApiLevel::sciApi_GTE_541;
+	else if (hasMinimalReplacementApi())
+		return SciApiLevel::sciApi_GTE_532;
+	else if (hasFullRangeApis())
+		return SciApiLevel::sciApi_GTE_523;
+	else if (hasV5Apis())
+		return SciApiLevel::sciApi_GTE_515;
+
+	return SciApiLevel::sciApi_LT_5;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::supportsDarkMode() const noexcept {
+	return _nppVersion.major >= 8;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::supportsBigFiles() const noexcept {
+	const Version target{ 8, 3 };
+	return _nppVersion >= target;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::hasV5Apis() const noexcept {
+	const Version target{ 8, 4 };
+	return _nppVersion >= target;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::hasFullRangeApis() const noexcept {
+	const Version target{ 8, 4, 3 };
+	return _nppVersion >= target;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::hasMinimalReplacementApi() const noexcept {
+	const Version target{ 8, 4, 8 };
+	return _nppVersion >= target;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::supportsDarkModeSubclassing() const noexcept {
+	const Version target{ 8, 5, 4 };
+	return _nppVersion >= target;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::hasMultiSelectionModeApis() const noexcept {
+	const Version target{ 8, 6, 1 };
+	return _nppVersion >= target;
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::isDarkModeEnabled() const {
+	const Version target{ 8, 4, 1 };
+	return (_nppVersion >= target) && (sendNppMessage(NPPM_ISDARKMODEENABLED) == MessageResult::mrTrue);
+}
+// --------------------------------------------------------------------------------------
+path_t PluginBase::pluginsConfigDir() const {
+	std::wstring s(MAX_WIDE_PATH, L'\0');
+	sendNppMessage(NPPM_GETPLUGINSCONFIGDIR, (MAX_WIDE_PATH - 1ULL), &s[0]);
+	return path_t(s.c_str(), path_t::format::native_format);
+}
+// --------------------------------------------------------------------------------------
+LangType PluginBase::documentLangType() const {
+	int typeInt = 0;
+	sendNppMessage(NPPM_GETCURRENTLANGTYPE, 0, &typeInt);
+	return static_cast<LangType>(typeInt);
+}
+// --------------------------------------------------------------------------------------
+path_t PluginBase::pluginsHomeDir() const {
+	std::wstring s(MAX_WIDE_PATH, L'\0');
+#ifdef _WIN32
+	sendNppMessage(NPPM_GETNPPDIRECTORY, (MAX_WIDE_PATH - 1ULL), &s[0]);
+	return path_t(s.c_str(), path_t::format::native_format) / path_t(L"plugins");
+#else
+	// <prefix>/lib/linuxpad++/plugins, not next to the executable
+	sendNppMessage(NPPM_GETPLUGINHOMEPATH, (MAX_WIDE_PATH - 1ULL), &s[0]);
+	return path_t(s.c_str(), path_t::format::native_format);
+#endif
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::openFile(path_t const &path) const {
+	return openFile(path.wstring().data());
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::openFile(wchar_t *filename) const {
+	path_t s = currentBufferPath();
+	// Ask if we are not already opened
+	if (TextConv::sameText(s.wstring(), filename))
+		return true;
+	return (sendNppMessage(WM_DOOPEN, UNUSEDW, filename) == MessageResult::mrFalse);
+}
+// --------------------------------------------------------------------------------------
+bool PluginBase::openFile(wchar_t *filename, Sci_Position line) const {
+	bool r = openFile(filename);
+	if (!r)
+		::SendMessageW(currentScintilla(), SCI_GOTOLINE, line, UNUSED);
+	return r;
+}
+// --------------------------------------------------------------------------------------
+path_t PluginBase::currentBufferPath(uintptr_t bufferId) const {
+	std::wstring result;
+	std::wstring pathbuf(MAX_WIDE_PATH, L'\0');
+
+	if (bufferId > 0)
+		sendNppMessage(NPPM_GETFULLPATHFROMBUFFERID, bufferId, &pathbuf[0]);
+	else
+		sendNppMessage(NPPM_GETFULLCURRENTPATH, (MAX_WIDE_PATH - 1ULL), &pathbuf[0]);
+
+	result.assign(&pathbuf[0], std::wcslen(&pathbuf[0]));
+	return path_t(result.cbegin(), result.cend(), path_t::format::native_format);
+}
+// --------------------------------------------------------------------------------------
+path_t PluginBase::pluginNameFromModule(HMODULE hInstace) {
+	_hModule = hInstace;
+	const path_t modulePath = getModulePath(_hModule);
+	return modulePath.stem().native();
+}
+// --------------------------------------------------------------------------------------
+SciActiveDocument const &PluginBase::getDocument() const {
+	DWORD_PTR index = 0;
+	sendNppMessage(NPPM_GETCURRENTSCINTILLA, UNUSEDW, &index);
+	return _editor->getViews()[(index > 0)];
+}
+
+// --------------------------------------------------------------------------------------
+// SciApplication
+// --------------------------------------------------------------------------------------
+void SciApplication::setApiLevel(SciApiLevel api) {
+	SciWindowedObject::setApiLevel(api);
+	SciViewList views = getViews();
+	for (size_t i = 0; i < views.size; i++)
+		views[i].setApiLevel(api);
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
+namespace {
+path_t getModulePath(HMODULE hInstace) {
+	uintptr_t iResult = 0, iError = 0, iSize = MAX_WIDE_PATH;
+	std::wstring result(iSize, L'\0');
+
+	do {
+		::SetLastError(0);
+		iResult = ::GetModuleFileNameW(hInstace, &result[0], static_cast<DWORD>(iSize));
+		iError = ::GetLastError();
+
+		if (iResult == 0) {
+			if (iError == ERROR_SUCCESS || iError == ERROR_MOD_NOT_FOUND) {
+				result.clear();
+				break;
+			}
+		} else if (iResult >= iSize) {
+			iSize = iResult + 1;
+		} else {
+			result.resize(iResult);
+			break;
+		}
+	} while (iResult < iSize);
+
+	if (result.substr(0, 4) == L"\\\\?\\") {
+		result = result.substr(4);
+	}
+
+	return path_t(result.cbegin(), result.cend(), path_t::format::native_format);
+}
+}

@@ -1,0 +1,682 @@
+#include "XBracketsOptions.h"
+#include "json11/json11.hpp"
+#include <algorithm>
+#include <map>
+
+using namespace XBrackets;
+
+namespace
+{
+    inline bool isTabSpace(const TCHAR ch)
+    {
+        return ( ch == _T(' ') || ch == _T('\t') );
+    }
+
+    bool isExtBoundary(const tstr& exts, size_t pos)
+    {
+        if ( pos == 0 || pos == exts.length() )
+            return true; // very beginning or end of the string
+
+        switch ( exts[pos] )
+        {
+        case _T(';'):
+        case _T(','):
+        case _T(' '):
+            return true; // separator character
+        }
+
+        return false;
+    }
+
+    bool isExtInExts(const TCHAR* szExt, const tstr& exts)
+    {
+        bool result = false;
+
+        if ( szExt )
+        {
+            size_t ext_len = static_cast<size_t>(lstrlen(szExt));
+            size_t pos = 0;
+
+            for ( ; ; )
+            {
+                pos = exts.find(szExt, pos, ext_len);
+                if ( pos == tstr::npos )
+                    break; // not found
+
+                size_t next_pos = pos + ext_len;
+                result = isExtBoundary(exts, pos != 0 ? pos - 1 : 0) && isExtBoundary(exts, next_pos);
+                if ( result )
+                    break; // found
+
+                pos = next_pos + 1;
+            }
+        }
+
+        return result;
+    }
+
+    bool isExtPartiallyInExts(const TCHAR* szExt, const tstr& exts)
+    {
+        bool result = false;
+
+        if ( szExt )
+        {
+            size_t pos = 0;
+            tstr ext;
+            tstr search_ext(szExt);
+
+            for ( ; ; )
+            {
+                size_t next_pos = exts.find_first_of(_T(";, "), pos);
+                size_t ext_len = (next_pos != tstr::npos) ? (next_pos - pos) : (exts.length() - pos);
+                ext.assign(exts, pos, ext_len);
+                result = (search_ext.find(ext) != tstr::npos);
+                if ( result )
+                    break; // found
+
+                if ( next_pos == tstr::npos )
+                    break; // not found
+
+                pos = next_pos + 1;
+                while ( pos < exts.length() && exts[pos] == _T(' ') )
+                    ++pos; // skip spaces
+            }
+        }
+
+        return result;
+    }
+
+    COLORREF getRGBfromString(const std::string& s)
+    {
+        if ( s.length() == 7 && s[0] == '#' )
+        {
+            try
+            {
+                unsigned char r = static_cast<unsigned char>(std::stoi(s.substr(1, 2), nullptr, 16));
+                unsigned char g = static_cast<unsigned char>(std::stoi(s.substr(3, 2), nullptr, 16));
+                unsigned char b = static_cast<unsigned char>(std::stoi(s.substr(5, 2), nullptr, 16));
+
+                return RGB(r, g, b);
+            }
+            catch (const std::exception&)
+            {
+            }
+        }
+
+        return RGB(0, 0, 0);
+    }
+
+    tBrPair readBrPairItem(const json11::Json& pairItem, bool isAutoComplete)
+    {
+        tBrPair brPair;
+
+        for ( const auto& elem : pairItem.array_items() )
+        {
+            if ( elem.is_string() )
+            {
+                const std::string& val = elem.string_value();
+
+                unsigned int kind = 0;
+                if ( !isAutoComplete )
+                {
+                    if ( brPair.kind == 0 )
+                    {
+                        if ( val == "single-line-brackets" )
+                            kind = bpkfBr;
+                        else if ( val == "multi-line-brackets" )
+                            kind = bpkfBr | bpkfMlLn;
+                        else if ( val == "single-line-quotes" )
+                            kind = bpkfQt;
+                        else if ( val == "multi-line-quotes" )
+                            kind = bpkfQt | bpkfMlLn;
+                        else if ( val == "single-line-comment" )
+                            kind = bpkfComm;
+                        else if ( val == "multi-line-comment" )
+                            kind = bpkfComm | bpkfMlLn;
+                        else if ( val == "quote-escape-char" )
+                            kind = bpkfEscCh;
+                    }
+                }
+
+                if ( kind != 0 )
+                    brPair.kind = kind;
+                else if ( brPair.leftBr.empty() )
+                    brPair.leftBr = val;
+                else if ( brPair.rightBr.empty() && (brPair.kind & bpkfEscCh) == 0 )
+                    brPair.rightBr = val;
+            }
+            else if ( elem.is_number() )
+            {
+                const unsigned int val = elem.int_value();
+                if ( !isAutoComplete )
+                {
+                    if ( val & 0x0001 )
+                        brPair.kind |= bpkfNoInSp;
+                    if ( val & 0x0002 )
+                        brPair.kind |= bpkfOpnLnSt;
+                    if ( val & 0x0004 )
+                        brPair.kind |= bpkfClsLnSt;
+                    if ( val & 0x0008 )
+                        brPair.kind |= bpkfOpnLdSp;
+                    if ( val & 0x0010 )
+                        brPair.kind |= bpkfClsLdSp;
+                }
+                else
+                {
+                    brPair.kind = val;
+                }
+            }
+        }
+
+        return brPair;
+    }
+
+    void sort_brpairs_by_len(std::vector<tBrPair>& brpairs)
+    {
+        if ( brpairs.empty() )
+            return;
+
+        // longer pairs are placed first to avoid intersections with
+        // characters of shorter pairs
+        std::sort(brpairs.begin(), brpairs.end(),
+            [](const tBrPair& item1, const tBrPair& item2)
+            {
+                const auto lenLeftBr1 = item1.leftBr.length();
+                const auto lenLeftBr2 = item2.leftBr.length();
+                return (lenLeftBr1 > lenLeftBr2 ||
+                    (lenLeftBr1 == lenLeftBr2 && item1.rightBr.length() > item2.rightBr.length()));
+            }
+        );
+    }
+
+    void add_new_brpairs(std::vector<tBrPair>& existingPairs, const std::vector<tBrPair>& newPairs)
+    {
+        for ( const tBrPair& newBr : newPairs )
+        {
+            const auto itrBegin = existingPairs.begin();
+            const auto itrEnd = existingPairs.end();
+            auto itr = std::find_if(itrBegin, itrEnd,
+                [&newBr](const tBrPair& oldBr)
+                {
+                    return oldBr.leftBr == newBr.leftBr && oldBr.rightBr == newBr.rightBr;
+                }
+            );
+            if ( itr != itrEnd )
+                itr->kind = newBr.kind; // preserving the child's pair kind
+            else
+                existingPairs.push_back(newBr);
+        }
+    }
+
+    tFileSyntax readFileSyntaxItem(const json11::Json& syntaxItem)
+    {
+        tFileSyntax fileSyntax;
+
+        for ( const auto& propItem : syntaxItem.object_items() )
+        {
+            if ( propItem.first == "name" )
+            {
+                if ( propItem.second.is_string() )
+                {
+                    fileSyntax.name = propItem.second.string_value();
+                }
+            }
+            else if ( propItem.first == "parent" )
+            {
+                if ( propItem.second.is_string() )
+                {
+                    fileSyntax.parent = propItem.second.string_value();
+                }
+            }
+            else if ( propItem.first == "fileExtensions" )
+            {
+                if ( propItem.second.is_array() )
+                {
+                    for ( const auto& fileExtItem : propItem.second.array_items() )
+                    {
+                        if ( fileExtItem.is_string() )
+                        {
+                            fileSyntax.fileExtensions.insert(string_to_tstr(fileExtItem.string_value()));
+                        }
+                    }
+                }
+                else if ( propItem.second.is_null() )
+                {
+                    fileSyntax.uFlags |= fsfNullFileExt;
+                }
+            }
+            else if ( propItem.first == "syntax" )
+            {
+                if ( propItem.second.is_array() )
+                {
+                    for ( const auto& elementItem : propItem.second.array_items() )
+                    {
+                        if ( elementItem.is_array() )
+                        {
+                            tBrPair brPair = readBrPairItem(elementItem, false);
+
+                            if ( brPair.kind != 0 )
+                            {
+                                if ( (brPair.kind & bpkfEscCh) == 0 )
+                                    fileSyntax.pairs.push_back(std::move(brPair));
+                                else
+                                    fileSyntax.qtEsc.push_back(std::move(brPair.leftBr));
+                            }
+                        }
+                    }
+                    sort_brpairs_by_len(fileSyntax.pairs);
+                }
+            }
+            else if ( propItem.first == "autocomplete" )
+            {
+                if ( propItem.second.is_array() )
+                {
+                    for ( const auto& autocomplItem : propItem.second.array_items() )
+                    {
+                        if ( autocomplItem.is_array() )
+                        {
+                            tBrPair brPair = readBrPairItem(autocomplItem, true);
+
+                            if ( !brPair.leftBr.empty() && !brPair.rightBr.empty() )
+                            {
+                                fileSyntax.autocomplete.push_back(std::move(brPair));
+                            }
+                        }
+                    }
+                    sort_brpairs_by_len(fileSyntax.autocomplete);
+                }
+            }
+        }
+
+        return fileSyntax;
+    }
+
+    void postprocessSyntaxes(std::list<tFileSyntax>& fileSyntaxes, const tFileSyntax** ppDefaultFileSyntax)
+    {
+        std::map<std::string, const tFileSyntax*> parentSyntaxes;
+
+        *ppDefaultFileSyntax = nullptr;
+
+        for ( const auto& fileSyntax : fileSyntaxes )
+        {
+            parentSyntaxes[fileSyntax.name] = &fileSyntax;
+        }
+
+        for ( auto& fileSyntax : fileSyntaxes )
+        {
+            if ( *ppDefaultFileSyntax == nullptr && (fileSyntax.uFlags & fsfNullFileExt) == 0 && fileSyntax.fileExtensions.empty() )
+                *ppDefaultFileSyntax = &fileSyntax;
+
+            if ( fileSyntax.parent.empty() )
+                continue;
+
+            const auto itrParent = parentSyntaxes.find(fileSyntax.parent);
+            if ( itrParent == parentSyntaxes.end() )
+                continue;
+
+            const tFileSyntax* pParentSyntax = itrParent->second;
+
+            if ( !pParentSyntax->pairs.empty() )
+            {
+                std::vector<tBrPair> childPairs;
+                std::swap(fileSyntax.pairs, childPairs);
+                fileSyntax.pairs = pParentSyntax->pairs;
+                add_new_brpairs(fileSyntax.pairs, childPairs);
+                sort_brpairs_by_len(fileSyntax.pairs);
+            }
+
+            if ( !pParentSyntax->autocomplete.empty() )
+            {
+                std::vector<tBrPair> childAutocompl;
+                std::swap(fileSyntax.autocomplete, childAutocompl);
+                fileSyntax.autocomplete = pParentSyntax->autocomplete;
+                add_new_brpairs(fileSyntax.autocomplete, childAutocompl);
+                sort_brpairs_by_len(fileSyntax.autocomplete);
+            }
+
+            if ( !pParentSyntax->qtEsc.empty() )
+            {
+                if ( fileSyntax.qtEsc.empty() )
+                    fileSyntax.qtEsc = pParentSyntax->qtEsc;
+            }
+        }
+    }
+
+    void setConfigOption(std::vector<char>& optionsBuf, const char* optionName, const char* optionValue)
+    {
+        const size_t lenOptName = strlen(optionName);
+        char* p = optionsBuf.data();
+        const char* pEnd = p + optionsBuf.size() - (lenOptName + 2) + 1;
+
+        for ( ; p < pEnd; ++p )
+        {
+            if ( *p == '"' && *(p + lenOptName + 1) == '"' &&
+                 memcmp(p + 1, optionName, lenOptName*sizeof(char)) == 0 )
+            {
+                break; // the "optionName" has been found
+            }
+        }
+
+        if ( p == pEnd )
+            return;
+
+        p += (lenOptName + 2); // after the "optionName"
+        while ( *p == ' ' || *p == '\t' )
+            ++p; // skipping whitespaces
+
+        if ( *p != ':' )
+            return;
+
+        p += 1; // after ':'
+        while ( *p == ' ' || *p == '\t' )
+            ++p; // skipping whitespaces
+
+        const char* p2 = p; // p points to the start of the old value
+        pEnd = optionsBuf.data() + optionsBuf.size();
+
+        if ( *p2 == '"' )
+        {
+            ++p2; // after the opening '"'
+            for ( ; p2 < pEnd; ++p2 )
+            {
+                const char ch = *p2;
+                if ( ch == '"' )
+                {
+                    ++p2; // after the closing '"'
+                    break; // end of the quoted string
+                }
+
+                if ( ch == '\\' )
+                {
+                    if ( p2 + 1 < pEnd )
+                        ++p2; // skip a character after '\\'
+                }
+            }
+        }
+
+        for ( ; p2 < pEnd; ++p2 )
+        {
+            const char ch = *p2;
+            if ( ch == ',' || ch == '}' || ch == '\r' || ch == '\n' )
+                break; // end of the old value
+        }
+
+        if ( p2 == pEnd )
+            return;
+
+        const size_t lenOldVal = static_cast<size_t>(p2 - p);
+        const size_t lenOptValue = strlen(optionValue);
+        const size_t offset = static_cast<size_t>(p - optionsBuf.data());
+        auto itrVal = optionsBuf.begin() + offset;
+        if ( lenOptValue > lenOldVal )
+        {
+            optionsBuf.insert(itrVal, lenOptValue - lenOldVal, '\0');
+            p = optionsBuf.data() + offset;
+        }
+        else if ( lenOptValue < lenOldVal )
+        {
+            optionsBuf.erase(itrVal, itrVal + (lenOldVal - lenOptValue));
+            p = optionsBuf.data() + offset;
+        }
+
+        memcpy(p, optionValue, lenOptValue*sizeof(char));
+    }
+}
+
+CXBracketsOptions::CXBracketsOptions() :
+  // default values:
+  m_uFlags(OPTF_AUTOCOMPLETE),
+  m_uFlags0(OPTF_AUTOCOMPLETE),
+  m_uSelAutoBr(sabNone),
+  m_uGoToNearestFlags(gnbfAutoPos),
+  m_uSelToNearestFlags(snbfAutoPos),
+  m_nJumpLinesVisUp(1),
+  m_nJumpLinesVisDown(0),
+  m_nJumpPairLineDiff(1),
+  m_nHighlightSciStyleIndIdx(-1),
+  m_nHighlightSciStyleIndIdx0(-1),
+  m_nHighlightSciStyleIndType(INDIC_TEXTFORE),
+  m_nHighlightSciColor(RGB(0xE0, 0x40, 0x40)),
+  m_nHighlightTypingDelayMs(1200),
+  m_nHighlightMaxTextLength(0),
+  m_sNextCharOK(_T(".,!?:;</")),
+  m_sPrevCharOK(_T("([{<=")),
+  m_sDelimiters(_T("'`\"\\|[](){}<>,.;:+-=~!@#$%^&*/?")),
+  m_pDefaultFileSyntax(nullptr)
+{
+}
+
+CXBracketsOptions::~CXBracketsOptions()
+{
+}
+
+bool CXBracketsOptions::IsSupportedFile(const TCHAR* szExt) const
+{
+    if ( m_sFileExtsRule.empty() || !szExt )
+        return true;
+
+    bool            bExclude = false;
+    tstr::size_type n = 0;
+
+    if ( m_sFileExtsRule[0] == _T('-') )
+    {
+        bExclude = true;
+        n = 1;
+    }
+    else if ( m_sFileExtsRule[0] == _T('+') )
+    {
+        n = 1;
+    }
+
+    const tstr::size_type len = m_sFileExtsRule.length();
+    while ( n < len && isTabSpace(m_sFileExtsRule[n]) )  ++n;
+    if ( n == len )
+        return true;
+
+    const unsigned int lenExt = lstrlen(szExt);
+    tstr::size_type pos = m_sFileExtsRule.find(szExt, n, lenExt);
+    while ( pos != tstr::npos )
+    {
+        if ( (pos == n) || isTabSpace(m_sFileExtsRule[pos - 1]) )
+        {
+            if ( (pos + lenExt == len) || isTabSpace(m_sFileExtsRule[pos + lenExt]) )
+                return !bExclude;
+        }
+        pos = m_sFileExtsRule.find(szExt, pos + 1, lenExt);
+    }
+
+    return bExclude;
+}
+
+void CXBracketsOptions::readConfigSettingsItem(const void* pContext)
+{
+    const auto pJsonItem = reinterpret_cast<const json11::Json*>(pContext);
+    if ( !pJsonItem->is_object() )
+        return;
+
+    for ( const auto& settingItem : pJsonItem->object_items() )
+    {
+        const auto& settingName = settingItem.first;
+        const auto& settingVal = settingItem.second;
+        if ( settingName == "AutoComplete" )
+        {
+            if ( settingVal.is_bool() )
+                setBracketsAutoComplete(settingVal.bool_value());
+        }
+        else if ( settingName == "AutoComplete_WhenRightBrExists" )
+        {
+            if ( settingVal.is_bool() )
+                setBracketsRightExistsOK(settingVal.bool_value());
+        }
+        else if ( settingName == "Sel_AutoBr" )
+        {
+            if ( settingVal.is_number() )
+                m_uSelAutoBr = settingVal.int_value();
+        }
+        else if ( settingName == "GoToNearest_Flags" )
+        {
+            if ( settingVal.is_number() )
+                m_uGoToNearestFlags = settingVal.int_value();
+        }
+        else if ( settingName == "SelToNearest_Flags" )
+        {
+            if ( settingVal.is_number() )
+                m_uSelToNearestFlags = settingVal.int_value();
+        }
+        else if ( settingName == "Jump_Lines_Vis_Up" )
+        {
+            if ( settingVal.is_number() )
+                m_nJumpLinesVisUp = settingVal.int_value();
+        }
+        else if ( settingName == "Jump_Lines_Vis_Down" )
+        {
+            if ( settingVal.is_number() )
+                m_nJumpLinesVisDown = settingVal.int_value();
+        }
+        else if ( settingName == "Jump_Pair_Line_Diff" )
+        {
+            if ( settingVal.is_number() )
+                m_nJumpPairLineDiff = settingVal.int_value();
+        }
+        else if ( settingName == "Next_Char_OK" )
+        {
+            if ( settingVal.is_string() )
+                m_sNextCharOK = string_to_tstr(settingVal.string_value());
+        }
+        else if ( settingName == "Prev_Char_OK" )
+        {
+            if ( settingVal.is_string() )
+                m_sPrevCharOK = string_to_tstr(settingVal.string_value());
+        }
+        else if ( settingName == "Delimiters" )
+        {
+            if ( settingVal.is_string() )
+                m_sDelimiters = string_to_tstr(settingVal.string_value());
+        }
+        else if ( settingName == "Highlight_SciStyleIndIdx" )
+        {
+            if ( settingVal.is_number() )
+                m_nHighlightSciStyleIndIdx = settingVal.int_value();
+        }
+        else if ( settingName == "Highlight_SciStyleIndType" )
+        {
+            if ( settingVal.is_number() )
+                m_nHighlightSciStyleIndType = settingVal.int_value();
+        }
+        else if ( settingName == "Highlight_SciColor" )
+        {
+            if ( settingVal.is_string() )
+                m_nHighlightSciColor = getRGBfromString(settingVal.string_value());
+        }
+        else if ( settingName == "Highlight_TypingDelayMs" )
+        {
+            if ( settingVal.is_number() )
+                m_nHighlightTypingDelayMs = settingVal.int_value();
+        }
+        else if ( settingName == "Highlight_MaxTextLength" )
+        {
+            if ( settingVal.is_number() )
+                m_nHighlightMaxTextLength = settingVal.int_value();
+        }
+        else if ( settingName == "FileExtsRule" )
+        {
+            if ( settingVal.is_string() )
+                m_sFileExtsRule = string_to_tstr_changecase(settingVal.string_value(), scLower);
+        }
+    }
+}
+
+bool CXBracketsOptions::IsConfigUpdated() const
+{
+    return (m_uFlags != m_uFlags0 || m_nHighlightSciStyleIndIdx != m_nHighlightSciStyleIndIdx0);
+}
+
+tstr CXBracketsOptions::ReadConfig(const tstr& cfgFilePath)
+{
+    std::list<tFileSyntax> fileSyntaxes;
+    const tFileSyntax* pDefaultFileSyntax = nullptr;
+
+    const auto jsonBuf = readFile(cfgFilePath.c_str());
+    if ( jsonBuf.empty() )
+    {
+        tstr msg(_T("Could not read the config file:\r\n\r\n"));
+        msg += cfgFilePath;
+        return msg;
+    }
+
+    std::string err;
+    const auto jsonObj = json11::Json::parse(jsonBuf.data(), err, json11::COMMENTS);
+    if ( jsonObj.is_null() )
+    {
+        tstr msg(_T("Failed to parse the JSON config:\r\n\r\n"));
+        msg += string_to_tstr(err);
+        return msg;
+    }
+
+    if ( !jsonObj.is_object() )
+    {
+        return tstr(_T("The JSON config is not a valid JSON object"));
+    }
+
+    for ( const auto& item : jsonObj.object_items() )
+    {
+        if ( item.first == "fileSyntax" )
+        {
+            if ( item.second.is_array() )
+            {
+                for ( const auto& syntaxItem : item.second.array_items() )
+                {
+                    if ( syntaxItem.is_object() )
+                    {
+                        fileSyntaxes.push_back(readFileSyntaxItem(syntaxItem));
+                    }
+                }
+            }
+        }
+        else if ( item.first == "settings" )
+        {
+            readConfigSettingsItem(&item.second);
+        }
+    }
+
+    postprocessSyntaxes(fileSyntaxes, &pDefaultFileSyntax);
+
+    // OK, finally:
+    m_uFlags0 = m_uFlags;
+    m_nHighlightSciStyleIndIdx0 = m_nHighlightSciStyleIndIdx;
+    std::swap(m_fileSyntaxes, fileSyntaxes);
+    std::swap(m_pDefaultFileSyntax, pDefaultFileSyntax);
+
+    return tstr();
+}
+
+void CXBracketsOptions::WriteConfig(const tstr& cfgFilePath)
+{
+    auto cfgBuf = readFile(cfgFilePath.c_str());
+
+    if ( m_uFlags0 != m_uFlags )
+    {
+        const char* strVal = getBracketsAutoComplete() ? "true" : "false";
+        setConfigOption(cfgBuf, "AutoComplete", strVal);
+    }
+
+    if ( m_nHighlightSciStyleIndIdx0 != m_nHighlightSciStyleIndIdx )
+    {
+        char strVal[12];
+        wsprintfA(strVal, "%d", getHighlightSciStyleIndIdx());
+        setConfigOption(cfgBuf, "Highlight_SciStyleIndIdx", strVal);
+    }
+
+    if ( writeFile(cfgFilePath.c_str(), cfgBuf) )
+    {
+        m_uFlags0 = m_uFlags;
+        m_nHighlightSciStyleIndIdx0 = m_nHighlightSciStyleIndIdx;
+    }
+}
+
+CXBracketsOptions& GetOptions()
+{
+    static CXBracketsOptions theOptions;
+
+    return theOptions;
+}

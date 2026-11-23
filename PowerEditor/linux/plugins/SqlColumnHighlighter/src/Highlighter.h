@@ -1,0 +1,46 @@
+// Highlighter.h — SQL INSERT 列/值解析与高亮绘制。
+#pragma once
+
+#include <windows.h>
+#include <string>
+#include <vector>
+#include <utility>
+
+namespace sqlhl {
+
+// 对光标位置的分析结果。所有下标都是字节下标：
+// stmt 内为相对下标，绘制时需加上 base 得到文档绝对下标。
+struct HitInfo {
+    std::string stmt;
+    int base = 0;   // stmt 在文档中的起始字节下标
+    std::vector<std::pair<int, int>> columns;                 // 列范围（stmt 内相对下标）
+    std::vector<std::vector<std::pair<int, int>>> rows;       // 每个 VALUES 行的值范围
+    int colIdx = -1;
+    int rowIdx = -1;        // 命中值时有效
+    bool isColumn = false;  // true = 光标在列名上，false = 光标在值上
+};
+
+// 设置绘制用的 indicator 号。默认 8（值）/ 9（列），与旧版一致；
+// v1.0.1 起 PluginMain 会在 NPPN_READY 时用 NPPM_ALLOCATEINDICATOR
+// 向 Notepad++ 申请两个号（避免与 Notepad++ 自身 21-31 及其他插件冲突），
+// 申请失败时回退到默认值。
+void setIndicators(int valueIndic, int columnIndic);
+
+// 分析 sci 中 pos 处的 INSERT 语句；找到列/值对应关系返回 true。
+bool analyse(HWND sci, int pos, HitInfo& out);
+
+// 诊断 analyse() 在 pos 处失败的原因：返回一行文本，含文档长度、
+// 语句长度、解析失败的阶段，以及语句前 120 字节的转义预览。
+// v1.0.2 起用于在真机日志里定位是读到的文本不对还是解析哪一步断了。
+std::string diagnose(HWND sci, int pos);
+
+// 按 HitInfo 绘制高亮：列名蓝色，值琥珀色。
+void highlight(HWND sci, const HitInfo& hit);
+
+// 清除本插件画的所有高亮。
+void clearHighlights(HWND sci);
+
+// 初始化指示器样式（幂等，可重复调用）。
+void setupIndicators(HWND sci);
+
+} // namespace sqlhl

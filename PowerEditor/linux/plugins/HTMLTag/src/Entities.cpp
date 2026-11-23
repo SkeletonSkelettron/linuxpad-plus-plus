@@ -1,0 +1,211 @@
+/*
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  You can obtain one at https://mozilla.org/MPL/2.0/.
+
+  Copyright (c) 2024 Robert Di Pardo <dipardo.r@gmail.com>
+  Original Pascal unit (c) Martijn Coppoolse <https://github.com/vor0nwe>
+*/
+#include "TextConv.h"
+#include "HtmlTag.h"
+
+using namespace HtmlTag;
+using namespace HtmlTag::Entities;
+using namespace SciTextObjects;
+
+/////////////////////////////////////////////////////////////////////////////////////////
+namespace {
+int doEncode(std::wstring &text, EntityList const &entities, bool includeLineBreaks);
+}
+
+// --------------------------------------------------------------------------------------
+// HtmlTag::Entities
+// --------------------------------------------------------------------------------------
+void Entities::encode(EntityReplacementScope /* scope */, bool includeLineBreaks) {
+	EntityList entities{};
+	plugin.getEntities(entities);
+	SciActiveDocument const &doc = plugin.activeDocument();
+	std::wstring text{ doc.currentSelection().text() };
+	if (doEncode(text, entities, includeLineBreaks) > 0) {
+		doc.currentSelection() = text;
+		doc.currentSelection().clearSelection();
+	}
+}
+// --------------------------------------------------------------------------------------
+int Entities::decode() {
+	int result = 0;
+	SciActiveDocument const &doc = plugin.activeDocument();
+
+	if (doc.getSelectionMode() != smStreamSingle)
+		return result;
+
+	wchar_t chStart = amp, chEnd = semi, chInvalid = colon;
+	std::wstring target{ doc.currentSelection().text() };
+	size_t charIndex = target.find(chStart); // Try to match an entity
+
+	if (charIndex == std::wstring::npos) {
+		chStart = colon;
+		charIndex = target.find(chStart); // Try to match an emoji
+		if (charIndex != std::wstring::npos) {
+			chInvalid = semi;
+			chEnd = chStart;
+		} else
+			return result;
+	}
+
+	size_t endPos = target.find(chEnd, charIndex);
+	// Make sure the selection includes the terminating char
+	if ((endPos == std::wstring::npos) ||
+	    // Disallow `:` inside entities, and `;` inside emoji
+	    (target.find(chInvalid, charIndex) < endPos)) {
+		return result;
+	}
+
+	EntityList entities{};
+	bool preferEmoji = (chStart == colon);
+	plugin.getEntities(entities, preferEmoji);
+
+	try {
+		while (charIndex != std::string::npos) {
+			size_t firstPos = charIndex + 1;
+			size_t lastPos = firstPos;
+			size_t nextIndex = target.length() + 1;
+			bool isNumeric = false, isHex = false;
+			std::wstringstream allowedChars;
+
+			for (size_t i = 1; i < target.length() - firstPos; i++) {
+				if (i == 1) {
+					if (!preferEmoji && target[firstPos] == L'#') {
+						isNumeric = true;
+						allowedChars << L"x" << &scDigits[0];
+					} else {
+						allowedChars << &scLetters[0] << &scDigits[0];
+						if (preferEmoji)
+							allowedChars << L"+_-";
+					}
+				} else if (i == 2) {
+					if (isNumeric && target[firstPos + 1] == L'x') {
+						isHex = true;
+						allowedChars << &scHexLetters[0];
+					}
+					allowedChars << chEnd;
+				}
+
+				if (allowedChars.str().find(target[firstPos + i]) == std::wstring::npos) {
+					// Invalid char found
+					lastPos = firstPos + i - 1;
+					nextIndex = firstPos + i;
+					break;
+				} else if (target[firstPos + i] == chEnd) {
+					// End found
+					lastPos = firstPos + i - 1;
+					nextIndex = firstPos + i + 1;
+					break;
+				}
+			}
+
+			int codePoint = 0;
+			bool isValid = false;
+
+			if (isNumeric) {
+				if (isHex) {
+					std::wstring hexStr = target.substr(firstPos + 2, lastPos - firstPos - 1);
+					codePoint = std::stoi(hexStr, nullptr, 16);
+					isValid = (codePoint != 0);
+				} else {
+					std::wstring numStr = target.substr(firstPos + 1, lastPos - firstPos);
+					codePoint = std::stoi(numStr);
+					isValid = (codePoint != 0);
+				}
+			} else {
+				std::string entityCodeStr;
+				std::wstring entityCode = target.substr(firstPos, lastPos - firstPos + 1);
+				TextConv::textToBytes(entityCode.c_str(), entityCodeStr, CP_ACP);
+				std::string const &entity = entities[entityCodeStr];
+				if (!entity.empty()) {
+					codePoint = std::stoi(entity);
+					isValid = (codePoint != 0);
+				} else {
+					codePoint = 0;
+					isValid = false;
+				}
+			}
+
+			if (isValid) {
+				// one character (a surrogate pair with a 16 bit wchar_t), without a trailing NUL that
+				// would cut the text after the first entity
+				std::wstring decoded;
+				if (sizeof(wchar_t) == 2 && codePoint >= 0x010000 && codePoint <= 0x10FFFF) {
+					decoded += static_cast<wchar_t>(((codePoint - 0x10000) >> 10) + 0xD800);
+					decoded += static_cast<wchar_t>(((codePoint - 0x10000) & 0x03FF) + 0xDC00);
+				} else {
+					decoded += static_cast<wchar_t>(codePoint);
+				}
+				target.replace(firstPos - 1, std::wstring::npos, decoded + target.substr(nextIndex));
+				++result;
+			}
+
+			charIndex = target.find(chStart, firstPos);
+		}
+	} catch (...) {
+	}
+
+	if (result > 0) {
+		doc.currentSelection() = target;
+		doc.currentSelection().clearSelection();
+	}
+
+	return result;
+}
+
+/////////////////////////////////////////////////////////////////////////////////////////
+namespace {
+int doEncode(std::wstring &text, Entities::EntityList const &entities, bool includeLineBreaks) {
+	int result = 0;
+	SciActiveDocument const &doc = plugin.activeDocument();
+
+	if (!entities || doc.getSelectionMode() != smStreamSingle)
+		return result;
+
+	std::wstring encodedEntity;
+	bool didReplace = false;
+
+	try {
+		for (std::ptrdiff_t chIndex = std::ssize(text) - 1; chIndex >= 0; chIndex--) {
+			size_t startPos = chIndex, endPos = chIndex + 1;
+			uint32_t charCode = text[chIndex];
+			std::string entity = entities[std::to_string(charCode)];
+			if (!entity.empty()) {
+				didReplace = true;
+				TextConv::bytesToText(entity.c_str(), encodedEntity);
+			} else if (charCode > 127 || (includeLineBreaks && (charCode == L'\n' || charCode == L'\r'))) {
+				std::wstringstream entityBuf;
+				const size_t chPrevIndex = static_cast<size_t>(std::max(0LL, chIndex - 1LL));
+				const uint32_t chPrevCode = text[chPrevIndex];
+				if (chPrevCode >= 0xD800 && chPrevCode <= 0xDBFF) {
+					charCode = ((chPrevCode & 0x03FFU) << 10) | (charCode & 0x03FFU) | 0x10000U;
+					entityBuf << L"#x" << std::uppercase << std::hex << std::setw(6)
+						  << std::setfill(L'0') << charCode;
+					startPos = chPrevIndex;
+					chIndex--;
+				} else {
+					entityBuf << L"#" << charCode;
+				}
+				didReplace = true;
+				encodedEntity = entityBuf.str();
+			} else
+				didReplace = false;
+
+			if (didReplace) {
+				text.replace(startPos, endPos - startPos, L'&' + encodedEntity + L';');
+				++result;
+			}
+			if (chIndex >= std::ssize(text))
+				break;
+		}
+	} catch (...) {
+	}
+
+	return result;
+}
+}

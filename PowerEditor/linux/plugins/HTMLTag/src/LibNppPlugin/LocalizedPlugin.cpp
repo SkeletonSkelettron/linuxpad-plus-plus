@@ -1,0 +1,53 @@
+/*
+  This Source Code Form is subject to the terms of the Mozilla Public
+  License, v. 2.0. If a copy of the MPL was not distributed with this file,
+  You can obtain one at https://mozilla.org/MPL/2.0/.
+
+  Copyright (c) 2024 Robert Di Pardo <dipardo.r@gmail.com>
+*/
+#include <cstdio>
+#include <share.h>
+#include "LocalizedPlugin.h"
+
+// --------------------------------------------------------------------------------------
+// LocalizedPlugin
+// --------------------------------------------------------------------------------------
+void LocalizedPlugin::setLanguage() {
+	// Always make sure that 'nativeLang.xml' exists
+	// https://github.com/notepad-plus-plus/notepad-plus-plus/commit/ea08a89
+	if (!std::filesystem::exists(getNativeLangFile()))
+		return;
+
+	if (supportsLocalizedPluginMenus()) {
+		intptr_t fnameLen = sendNppMessage(NPPM_GETNATIVELANGFILENAME);
+		std::string fname(++fnameLen, 0);
+		sendNppMessage(NPPM_GETNATIVELANGFILENAME, fnameLen, &fname[0]);
+		_nativeLangId = path_t(fname).stem().string();
+	}
+}
+// --------------------------------------------------------------------------------------
+path_t LocalizedPlugin::getNativeLangFile() const {
+	path_t path;
+	if (editor().windowHandle() == 0)
+		return path;
+
+	const Version target{ 8, 8, 6 };
+	if (nppVersion() >= target) {
+		intptr_t pathLen = sendNppMessage(NPPM_GETNPPSETTINGSDIRPATH);
+		std::wstring dirPath(++pathLen, 0);
+		sendNppMessage(NPPM_GETNPPSETTINGSDIRPATH, pathLen, dirPath.data());
+		path = path_t(dirPath.c_str(), path_t::format::native_format) / path_t(L"nativeLang.xml");
+	}
+	if (!std::filesystem::exists(path))
+		// portable installation ?
+		path = pluginsHomeDir().parent_path() / path_t(L"nativeLang.xml");
+	if (!std::filesystem::exists(path))
+		// system-wide installation ?
+		path = pluginsConfigDir().parent_path().parent_path() / path_t(L"nativeLang.xml");
+	return path;
+}
+// --------------------------------------------------------------------------------------
+bool LocalizedPlugin::supportsLocalizedPluginMenus() const noexcept {
+	const Version target{ 8, 7 };
+	return nppVersion() >= target;
+}

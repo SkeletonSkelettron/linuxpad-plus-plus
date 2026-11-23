@@ -16,7 +16,7 @@ npp_add_plugin(JsonTools DLLMAIN JsonTools.cpp)
 
 # Portable sources from molsonkiko/JsonToolsNppPlugin, revision aca51ea651948a9429317f1cf130693e3c8ae542.
 set(_backend "${CMAKE_CURRENT_SOURCE_DIR}/backend")
-set(_output "${CMAKE_BINARY_DIR}/lib/notepad++/plugins/JsonTools")
+set(_output "${CMAKE_BINARY_DIR}/lib/linuxpad++/plugins/JsonTools")
 file(GLOB_RECURSE _sources CONFIGURE_DEPENDS "${_backend}/*.cs")
 set(_managed_files
 	"${_output}/JsonToolsEngine.dll"
@@ -35,4 +35,4 @@ add_custom_command(
 	VERBATIM)
 add_custom_target(JsonTools_backend DEPENDS ${_managed_files})
 add_dependencies(JsonTools JsonTools_backend)
-install(FILES ${_managed_files} DESTINATION "lib/notepad++/plugins/JsonTools")
+install(FILES ${_managed_files} DESTINATION "lib/linuxpad++/plugins/JsonTools")

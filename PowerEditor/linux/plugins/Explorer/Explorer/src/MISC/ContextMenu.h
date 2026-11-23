@@ -1,0 +1,146 @@
+/***********************************************************\
+*	Original in MFC by Roman Engels		Copyright 2003		*
+*															*
+*	http://www.codeproject.com/shell/shellcontextmenu.asp	*
+\***********************************************************/
+
+/*
+This file is part of Explorer Plugin for Notepad++
+Copyright (C)2006 Jens Lorenz <jens.plugin.npp@gmx.de>
+
+This program is free software; you can redistribute it and/or
+modify it under the terms of the GNU General Public License
+as published by the Free Software Foundation; either version 2
+of the License, or (at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with this program; if not, write to the Free Software
+Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+*/
+
+
+
+#ifndef	CONTEXTMENU_DEFINE_H
+#define CONTEXTMENU_DEFINE_H
+
+#include <vector>
+using namespace std;
+
+#include "NewDlg.h"
+
+typedef struct
+{
+	TCHAR * pszFullPath;
+	TCHAR	szFileName[MAX_PATH];
+	TCHAR	szTypeName[MAX_PATH];
+	UINT64	u64FileSize;
+	DWORD	dwFileAttributes;
+	int		iIcon;
+	FILETIME ftLastModified;
+} OBJECT_DATA;
+
+#define CTX_MIN 1
+#define CTX_MAX 10000
+
+typedef enum
+{
+	CTX_DELETE			= 18,
+	CTX_RENAME			= 19,
+	CTX_CUT				= 25,
+	CTX_COPY			= 26,
+	CTX_PASTE			= 27,
+	CTX_NEW_FILE		= CTX_MAX,
+	CTX_NEW_FOLDER,
+	CTX_FIND_IN_FILES,
+	CTX_OPEN,
+	CTX_OPEN_DIFF_VIEW,
+	CTX_OPEN_NEW_INST,
+	CTX_OPEN_CMD,
+	CTX_ADD_TO_FAVES,
+	CTX_FULL_PATH,
+	CTX_FULL_FILES,
+	CTX_GOTO_SCRIPT_PATH,
+	CTX_START_SCRIPT
+} eContextMenuID;
+
+class ContextMenu  
+{
+public:
+	ContextMenu();
+	~ContextMenu();
+
+	/* get menu */
+	HMENU	GetMenu (void);
+
+	void SetObjects(wstring strObject);
+	void SetObjects(vector<wstring> strArray);
+	UINT ShowContextMenu(HINSTANCE hInst, HWND hWndNpp, HWND hWndParent, POINT pt, bool normal = true);
+
+private:
+#ifndef NPP_PLUGIN_SDK_LINUX
+	static const int _idSubclassContextMenuProc = 43;
+	static LRESULT CALLBACK HookWndProc (HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam, UINT_PTR uIdSubclass, DWORD_PTR dwRefData);
+
+	HRESULT SHBindToParentEx (LPCITEMIDLIST pidl, REFIID riid, VOID **ppv, LPCITEMIDLIST *ppidlLast);
+
+	void	InvokeCommand(LPCONTEXTMENU pContextMenu, UINT idCommand);
+	BOOL	GetContextMenu(void ** ppContextMenu, int & iMenuType);
+	void	FreePIDLArray(LPITEMIDLIST * pidlArray);
+	UINT	GetPIDLSize(LPCITEMIDLIST pidl);
+	LPBYTE	GetPIDLPos(LPCITEMIDLIST pidl, int nPos);
+	int		GetPIDLCount(LPCITEMIDLIST pidl);
+	LPITEMIDLIST CopyPIDL(LPCITEMIDLIST pidl, int cb = -1);
+#else
+	/* Linux: no shell context menu, its commands are made here */
+	void	BuildStandardMenu(bool isFolder);
+	void	InvokeCommand(UINT idCommand);
+	void	openWithDefaultApp(void);
+	void	showInFileManager(void);
+	void	filesToClipboard(bool cut);
+	void	pasteFiles(void);
+	void	deleteFiles(void);
+	void	refreshParent(void);
+#endif
+
+	/* notepad functions */
+	void	Rename(void);
+	void	newFile(void);
+	void	newFolder(void);
+	void	findInFiles(void);
+	void	openFile(void);
+	void	openFileInOtherView(void);
+	void	openFileInNewInstance(void);
+	void	openPrompt(void);
+	void	addToFaves(bool isFolder);
+	void	addFullPathsCB(void);
+	void	addFileNamesCB(void);
+	bool	Str2CB(LPCTSTR str2cpy);
+	void	openScriptPath(HMODULE hInst);
+	void	startNppExec(HMODULE hInst, UINT cmdID);
+
+private:
+	HINSTANCE				_hInst;
+	HWND					_hWndNpp;
+	HWND					_hWndParent;
+
+	int						_nItems;
+	BOOL					_bDelete;
+	HMENU					_hMenu;
+#ifndef NPP_PLUGIN_SDK_LINUX
+	IShellFolder*			_psfFolder;
+	LPITEMIDLIST*			_pidlArray;	
+#else
+	void*					_pidlArray;	/* not NULL when objects are set (like the PIDLs of Windows) */
+#endif
+
+	wstring					_strFirstElement;
+	vector<wstring>			_strArray;
+	vector<wstring>			_strNppScripts;
+};
+
+#endif // CONTEXTMENU_DEFINE_H

@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!--
+  Notepad++ styling config for the OCaml Lexilla lexer.
+  Install to:  <Notepad++>\plugins\Config\OCamlLexer.xml
+  styleID values match the S_* enum in ocaml_core.h; name values match
+  ILexer5::NameOfStyle. Colours are RGB hex (NPP), converted from the
+  Scintilla BGR defaults set in the plugin.
+-->
+<NotepadPlus>
+    <LexerStyles>
+        <LexerType name="OCaml" desc="OCaml" ext="ml mli mll mly">
+            <WordsStyle name="default"  styleID="0" fgColor="000000" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+            <WordsStyle name="keyword"  styleID="1" fgColor="0000CC" bgColor="FFFFFF" fontName="" fontStyle="1" fontSize="" />
+            <WordsStyle name="comment"  styleID="2" fgColor="208020" bgColor="FFFFFF" fontName="" fontStyle="2" fontSize="" />
+            <WordsStyle name="string"   styleID="3" fgColor="C02222" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+            <WordsStyle name="char"     styleID="4" fgColor="A00090" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+            <WordsStyle name="number"   styleID="5" fgColor="FF8C00" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+            <WordsStyle name="operator" styleID="6" fgColor="006080" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+            <WordsStyle name="typevar"  styleID="7" fgColor="008080" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+            <WordsStyle name="module"   styleID="8" fgColor="105090" bgColor="FFFFFF" fontName="" fontStyle="0" fontSize="" />
+        </LexerType>
+    </LexerStyles>
+</NotepadPlus>

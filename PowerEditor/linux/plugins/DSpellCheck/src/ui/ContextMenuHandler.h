@@ -1,0 +1,58 @@
+// This file is part of DSpellCheck Plug-in for Notepad++
+// Copyright (C)2019 Sergey Semushin <Predelnik@gmail.com>
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU General Public License
+// as published by the Free Software Foundation; either version 2
+// of the License, or (at your option) any later version.
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+// You should have received a copy of the GNU General Public License
+// along with this program; if not, write to the Free Software
+// Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
+
+#pragma once
+#include "common/Utility.h"
+#include "plugin/Constants.h"
+
+class Settings;
+class SpellerContainer;
+class EditorInterface;
+class SuggestionMenuButton;
+class SpellChecker;
+
+class ContextMenuHandler {
+public:
+  ContextMenuHandler(const Settings &settings,
+                     const SpellerContainer &speller_container,
+                     EditorInterface &editor,
+                     const SpellChecker &spell_checker);
+  [[nodiscard]] std::vector<MenuItem> select_word_and_get_suggestion_menu_items();
+  void process_menu_result(WPARAM menu_id);
+  void update_word_under_cursor_data();
+  void precalculate_menu();
+  void init_suggestions_box(SuggestionMenuButton &suggestion_button);
+  bool is_word_under_cursor_correct() const { return m_word_under_cursor_is_correct; }
+
+private:
+  bool select_word_under_cursor();
+  void do_plugin_menu_inclusion(bool invalidate = false);
+  void process_ignore_all();
+  void process_add_to_dictionary();
+  void process_replace(WPARAM result);
+  void process_replace_all(WPARAM result);
+  void process_plugin_menu_result(WPARAM menu_id);
+  void process_language_menu_result(WPARAM menu_id);
+
+private:
+  const Settings &m_settings;
+  const SpellerContainer &m_speller_container;
+  EditorInterface &m_editor;
+  MappedWstring m_last_selected_word;
+  TextPosition m_word_under_cursor_length = 0;
+  TextPosition m_word_under_cursor_pos = 0;
+  std::vector<std::wstring> m_last_suggestions;
+  const SpellChecker &m_spell_checker;
+  bool m_word_under_cursor_is_correct = true;
+};
