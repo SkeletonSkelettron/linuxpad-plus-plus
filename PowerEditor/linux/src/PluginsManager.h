@@ -93,6 +93,15 @@ public:
 	~PluginsManager() override;
 
 	static QStringList pluginsDirs();  // where plugins are looked for, first the one of the installation
+	struct AvailablePlugin
+	{
+		QString folder;     // plugins/<folder>/<folder>.so
+		QString path;       // of the .so
+		bool userFolder;    // in userPluginsDir() (imported), else bundled with LinuxPad++
+	};
+	static QList<AvailablePlugin> availablePlugins(); // the plugins of pluginsDirs(), each folder name once
+	// the plugins loadPlugins() loads: the ones of [Plugins] enabled (Plugins Admin), or $NPP_PLUGINS_ONLY (tests)
+	static QList<AvailablePlugin> pluginsToLoad();
 	static QString userPluginsDir();   // Settings > Import > Import plugin(s)... copies there
 	static QString pluginsConfigDir(); // NPPM_GETPLUGINSCONFIGDIR
 

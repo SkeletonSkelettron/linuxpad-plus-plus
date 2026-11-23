@@ -1960,6 +1960,100 @@ int main(int argc, char** argv)
 				QStringLiteral("fired %1, killed %2 %3, ticks after kill %4->%5 %6->%7").arg(fired).arg(killedHost).arg(killedWindowless)
 					.arg(hostAfterKill).arg(hostTicks).arg(windowlessAfterKill).arg(windowlessTicks));
 		}
+		// the plugins come with LinuxPad++ but load only when the user chose them ([Plugins] enabled= of config.ini)
+		{
+			NppPrefs& prefs = Npp::prefs();
+			const QStringList savedChoice = prefs.enabledPlugins;
+			const QByteArray only = qgetenv("NPP_PLUGINS_ONLY");
+			auto toLoad = []
+			{
+				QStringList folders;
+				for (const PluginsManager::AvailablePlugin& p : PluginsManager::pluginsToLoad())
+					folders << p.folder;
+				folders.sort(Qt::CaseInsensitive);
+				return folders;
+			};
+			qunsetenv("NPP_PLUGINS_ONLY");
+			prefs.enabledPlugins.clear();
+			const QStringList nothingChosen = toLoad();
+			prefs.enabledPlugins = {QStringLiteral("NppTestPlugin"), QStringLiteral("mimeTools"), QStringLiteral("NoSuchPlugin")};
+			const QStringList twoChosen = toLoad();
+			qputenv("NPP_PLUGINS_ONLY", only);
+			prefs.enabledPlugins = savedChoice;
+			QStringList available;
+			for (const PluginsManager::AvailablePlugin& p : PluginsManager::availablePlugins())
+				available << p.folder;
+			check(nothingChosen.isEmpty() && twoChosen == QStringList{QStringLiteral("mimeTools"), QStringLiteral("NppTestPlugin")}
+			      && available.contains(QStringLiteral("ComparePlus")) == bool(NPP_TEST_BUNDLED_PLUGINS),
+			      "plugins: only the chosen plugins are loaded, none when nothing is chosen",
+			      QStringLiteral("none: %1 | chosen: %2").arg(nothingChosen.join(QLatin1Char(',')), twoChosen.join(QLatin1Char(','))));
+
+			// Plugins Admin...: before Open Plugins Folder... in the Plugins menu; the ticked plugins are saved
+			QAction* admin = w->action(IDM_SETTING_PLUGINADM);
+			QAction* openDir = w->action(IDM_SETTING_OPENPLUGINSDIR);
+			QMenu* pluginsMenu = nullptr;
+			for (QObject* o : openDir ? openDir->associatedObjects() : QObjectList())
+			{
+				if (auto* m = qobject_cast<QMenu*>(o))
+					pluginsMenu = m;
+			}
+			const QList<QAction*> menuActions = pluginsMenu ? pluginsMenu->actions() : QList<QAction*>();
+			const qsizetype adminAt = menuActions.indexOf(admin);
+			check(admin && admin->isEnabled() && adminAt >= 0 && adminAt < menuActions.indexOf(openDir),
+			      "plugins: Plugins Admin... in the Plugins menu, before Open Plugins Folder...");
+			QStringList listed;
+			QString loadedState;
+			bool savedMessage = false;
+			QTimer driver;
+			driver.setInterval(100);
+			int ticks = 0;
+			QObject::connect(&driver, &QTimer::timeout, [&]
+			{
+				QWidget* modal = QApplication::activeModalWidget();
+				if (auto* box = qobject_cast<QMessageBox*>(modal))
+				{
+					savedMessage = box->text().contains(QStringLiteral("next time"));
+					box->accept();
+					driver.stop();
+					return;
+				}
+				auto* dlg = qobject_cast<QDialog*>(modal);
+				if (dlg && dlg->objectName() == QStringLiteral("pluginsAdmin"))
+				{
+					auto* list = dlg->findChild<QTreeWidget*>(QStringLiteral("plugins"));
+					for (int i = 0; list && i < list->topLevelItemCount(); ++i)
+					{
+						QTreeWidgetItem* item = list->topLevelItem(i);
+						listed << item->text(0);
+						if (item->text(0) == QStringLiteral("mimeTools"))
+							loadedState = item->text(2);
+						if (item->text(0) == QStringLiteral("NppTestPlugin"))
+							item->setCheckState(0, Qt::Checked);
+					}
+					shot(dlg, QStringLiteral("29-plugins-admin"));
+					dlg->accept();
+					return;
+				}
+				if (++ticks > 50)
+					driver.stop();
+			});
+			prefs.enabledPlugins.clear();
+			driver.start();
+			w->command(IDM_SETTING_PLUGINADM);
+			QElapsedTimer waited;
+			waited.start();
+			while (driver.isActive() && waited.elapsed() < 6000)
+				QApplication::processEvents(QEventLoop::AllEvents, 50);
+			const QString configIni = QString::fromUtf8(readAll(Npp::configDir() + QStringLiteral("/config.ini")));
+			check(listed.contains(QStringLiteral("NppTestPlugin")) && listed.contains(QStringLiteral("mimeTools")) && loadedState == QStringLiteral("loaded")
+			      && prefs.enabledPlugins == QStringList{QStringLiteral("NppTestPlugin")} && savedMessage
+			      && configIni.contains(QStringLiteral("[Plugins]")) && configIni.contains(QStringLiteral("enabled=NppTestPlugin")),
+			      "plugins: Plugins Admin lists the plugins of the folders and saves the ticked ones in config.ini",
+			      QStringLiteral("listed %1, mimeTools '%2', choice %3, message %4").arg(listed.size()).arg(loadedState)
+			          .arg(prefs.enabledPlugins.join(QLatin1Char(','))).arg(savedMessage));
+			prefs.enabledPlugins = savedChoice;
+			prefs.save();
+		}
 		auto nppn = [](const TestPluginReport& r, unsigned int code) { return r.nppn[code - NPPN_FIRST]; };
 		auto idFrom = [](const TestPluginReport& r, unsigned int code) { return r.lastIdFrom[code - NPPN_FIRST]; };
 
@@ -2392,6 +2486,27 @@ int main(int argc, char** argv)
 		shotModal(QStringLiteral("24-column-editor"), [&] { NppDialogs::columnEditor(w, v); });
 		shotModal(QStringLiteral("25-about"), [&] { w->command(IDM_ABOUT); });
 		shotModal(QStringLiteral("26-debug-info"), [&] { w->command(IDM_DEBUGINFO); });
+		// the About box and its menu item: LinuxPad++ with its own version, based on Notepad++ (whose version the
+		// plugins get)
+		{
+			QString aboutTitle, aboutText;
+			QTimer::singleShot(400, [&]
+			{
+				if (auto* box = qobject_cast<QMessageBox*>(QApplication::activeModalWidget()))
+				{
+					aboutTitle = box->windowTitle();
+					aboutText = box->text();
+					box->reject();
+				}
+			});
+			w->command(IDM_ABOUT);
+			QAction* about = w->action(IDM_ABOUT);
+			const QString menuText = about ? about->text().remove(QLatin1Char('&')) : QString();
+			check(aboutTitle == QStringLiteral("About LinuxPad++") && aboutText.contains(QStringLiteral("LinuxPad++ v") + Npp::linuxPadVersion())
+			      && aboutText.contains(QStringLiteral("Notepad++ v") + Npp::version()) && Npp::linuxPadVersion() != Npp::version()
+			      && menuText.startsWith(QStringLiteral("About LinuxPad++")),
+			      "About: LinuxPad++ with its own version, based on Notepad++", aboutTitle + QStringLiteral(" | ") + menuText + QStringLiteral(" | ") + aboutText.left(160));
+		}
 		shotModal(QStringLiteral("27-summary"), [&] { w->command(IDM_VIEW_SUMMARY); });
 		shotModal(QStringLiteral("28-windows"), [&] { w->command(IDM_WINDOW_WINDOWS); });
 	}

@@ -383,6 +383,9 @@ struct NppPrefs
 #define NPP_PREF_DECLARE(type, name, def) type name = def;
 	NPP_PREF_FIELDS(NPP_PREF_DECLARE)
 #undef NPP_PREF_DECLARE
+	// [Plugins] enabled= of config.ini: the folders of the plugins LinuxPad++ loads, chosen by the user in
+	// Plugins > Plugins Admin... (or imported); none at the first start, though the bundled plugins are installed
+	QStringList enabledPlugins;
 
 	void load();
 	void save() const;
@@ -417,7 +420,8 @@ namespace Npp
 	QString cloudChoiceFile(); // ~/.config/linuxpad++/cloud/choice, like Notepad++
 	void beep(); // QApplication::beep() unless "Mute all sounds"
 	QString windowsDateTimeFormat(const QString& fmt); // Windows date/time picture ("tt": AM/PM) to Qt
-	QString version();   // e.g. "8.9.9"
+	QString version();   // the Notepad++ version LinuxPad++ is based on, e.g. "8.9.9" (NPPM_GETNPPVERSION)
+	QString linuxPadVersion(); // the version of LinuxPad++, e.g. "0.0.1"
 	QString appName();   // "LinuxPad++"
 	bool isDarkDesktop();
 	QString stripAmpersand(const QString& s);

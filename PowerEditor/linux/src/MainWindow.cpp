@@ -572,6 +572,26 @@ void MainWindow::buildMenus()
 		_recentSeparator = _fileMenu->insertSeparator(exitAction);
 	}
 
+	// Plugins Admin... (added by the PluginsManager of Notepad++, not in the .rc): before Open Plugins Folder...
+	if (QAction* openDir = _actions.value(IDM_SETTING_OPENPLUGINSDIR))
+	{
+		for (QObject* o : openDir->associatedObjects())
+		{
+			auto* pluginsMenu = qobject_cast<QMenu*>(o);
+			if (!pluginsMenu)
+				continue;
+			auto* a = new QAction(this);
+			a->setData(IDM_SETTING_PLUGINADM);
+			connect(a, &QAction::triggered, this, [this] { command(IDM_SETTING_PLUGINADM); });
+			_actions.insert(IDM_SETTING_PLUGINADM, a);
+			_rcLabels.insert(IDM_SETTING_PLUGINADM, QStringLiteral("Plugins Admin..."));
+			_commandTopMenu.insert(IDM_SETTING_PLUGINADM, pluginsMenu);
+			pluginsMenu->insertAction(openDir, a);
+			pluginsMenu->insertSeparator(openDir);
+			break;
+		}
+	}
+
 	// tab bar commands with no menu entry in the .rc
 	for (int id : {IDM_PINTAB, IDM_VIEW_SWITCHTO_OTHER_VIEW})
 	{

@@ -47,6 +47,13 @@ void NppPrefs::load()
 	NPP_PREF_FIELDS(NPP_PREF_LOAD)
 #undef NPP_PREF_LOAD
 
+	enabledPlugins.clear();
+	for (const QString& folder : s.value(QStringLiteral("Plugins/enabled")).toStringList())
+	{
+		if (!folder.trimmed().isEmpty() && !enabledPlugins.contains(folder.trimmed(), Qt::CaseInsensitive))
+			enabledPlugins << folder.trimmed();
+	}
+
 	// options of the Find dialog (Smart Highlighting "Use Find dialog settings")
 	Npp::findState().matchCase = s.value(QStringLiteral("Find/matchCase"), false).toBool();
 	Npp::findState().wholeWord = s.value(QStringLiteral("Find/wholeWord"), false).toBool();
@@ -104,6 +111,8 @@ void NppPrefs::save() const
 #define NPP_PREF_SAVE(type, name, def) s.setValue(QStringLiteral(#name), name);
 	NPP_PREF_FIELDS(NPP_PREF_SAVE)
 #undef NPP_PREF_SAVE
+	// a list QSettings writes as "a, b, c"; an empty one as an empty value (not @Invalid())
+	s.setValue(QStringLiteral("Plugins/enabled"), enabledPlugins.isEmpty() ? QVariant(QString()) : QVariant(enabledPlugins));
 	for (const char* old : {"currentLineHilite", "largeToolbarIcons", "showChangeHistory", "edgeMode", "edgeColumn", "autoIndent", "multiInstance", "fileAutoDetect"})
 		s.remove(QString::fromLatin1(old));
 	s.sync();
@@ -349,6 +358,11 @@ namespace Npp
 	QString version()
 	{
 		return QStringLiteral(NPP_VERSION_STRING);
+	}
+
+	QString linuxPadVersion()
+	{
+		return QStringLiteral(LINUXPAD_VERSION_STRING);
 	}
 
 	QString appName()

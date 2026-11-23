@@ -18,6 +18,26 @@ build-options:
 cleanup:
   - /lib/dotnet/shared/Microsoft.AspNetCore.App
 modules:
+  # Git Diff of ComparePlus loads libgit2 (not in the KDE runtime); local repositories only, no network backends
+  - name: libgit2
+    buildsystem: cmake-ninja
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=Release
+      - -DBUILD_TESTS=OFF
+      - -DBUILD_CLI=OFF
+      - -DUSE_SSH=OFF
+      - -DUSE_HTTPS=OFF
+      - -DREGEX_BACKEND=builtin
+    cleanup:
+      - /include
+      - /lib/pkgconfig
+    license-files:
+      - COPYING
+    sources:
+      - type: git
+        url: https://github.com/libgit2/libgit2.git
+        tag: v1.9.7
+        commit: 49e408b3208bc3093757a1c2db938d3590f3f412
   - name: linuxpad-plus-plus
     buildsystem: simple
     build-commands:

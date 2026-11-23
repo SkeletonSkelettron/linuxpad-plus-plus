@@ -132,7 +132,7 @@ int main(int argc, char** argv)
 {
 	QApplication::setApplicationName(QStringLiteral("linuxpad++"));
 	QApplication::setApplicationDisplayName(QStringLiteral("LinuxPad++"));
-	QApplication::setApplicationVersion(Npp::version());
+	QApplication::setApplicationVersion(Npp::linuxPadVersion());
 	QApplication::setDesktopFileName(qEnvironmentVariable("FLATPAK_ID", QStringLiteral("linuxpad-plus-plus")));
 	QApplication app(argc, argv);
 

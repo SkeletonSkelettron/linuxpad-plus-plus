@@ -80,8 +80,10 @@ shipped models. Imported themes go to `~/.config/linuxpad++/themes/`.
 
 ## Plugins
 
-The Plugins menu lists the loaded modules. See the [bundled plugin list](PLUGINS_STATUS.md#bundled-modules)
-for their features. JSONTools builds when the .NET 10 SDK is present. Other plugins
+The plugins are installed with LinuxPad++, but only the ones chosen in **Plugins > Plugins Admin…** are loaded
+(none at the first start; saved as `[Plugins] enabled=` in `~/.config/linuxpad++/config.ini`, applied at the next
+start). The [main README](../../README.md#plugins) explains how to choose and install plugins. See the
+[bundled plugin list](PLUGINS_STATUS.md#bundled-modules) for their features. JSONTools builds when the .NET 10 SDK is present. Other plugins
 need a source port that produces a Linux `.so` library.
 
 - **Diff Checker > Compare…** compares two tabs, files from disk, or a tab against
@@ -97,7 +99,7 @@ need a source port that produces a Linux `.so` library.
 
 Build options are `-DNPP_BUILD_PLUGINS=OFF` and `-DNPP_BUILD_JSONTOOLS=OFF`.
 Use `-noPlugin` at launch to skip loading plugins. For a standalone module,
-use **Settings > Import > Import plugin(s)…** and restart. For modules with companion files,
+use **Settings > Import > Import plugin(s)…** (it is chosen too) and restart. For modules with companion files,
 put the complete plugin folder in the location shown by **Plugins > Open Plugins Folder…**.
 
 The [plugin status](PLUGINS_STATUS.md) describes the Linux SDK and per-plugin coverage.

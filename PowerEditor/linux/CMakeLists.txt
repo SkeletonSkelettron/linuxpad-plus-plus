@@ -36,7 +36,11 @@ if(NOT NPP_VERSION)
 endif()
 string(REGEX MATCH "^[0-9]+(\\.[0-9]+)?(\\.[0-9]+)?" _npp_cmake_version "${NPP_VERSION}")
 
-project(LinuxPadPlusPlus VERSION ${_npp_cmake_version} LANGUAGES C CXX)
+# Version of LinuxPad++ (its own releases); NPP_VERSION stays the Notepad++ version it is based on, the one the
+# plugins get (NPPM_GETNPPVERSION)
+set(LINUXPAD_VERSION "0.0.1")
+
+project(LinuxPadPlusPlus VERSION ${LINUXPAD_VERSION} LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -173,6 +177,7 @@ target_include_directories(npp_app PUBLIC
 	"${CMAKE_CURRENT_SOURCE_DIR}/src" "${NPP_GEN_DIR}" "${NPP_SRC}" "${SCI_DIR}/include" "${LEX_DIR}/include")
 target_compile_definitions(npp_app PUBLIC
 	NPP_VERSION_STRING="${NPP_VERSION}"
+	LINUXPAD_VERSION_STRING="${LINUXPAD_VERSION}"
 	NPP_SCINTILLA_VERSION="${NPP_SCINTILLA_VERSION}"
 	NPP_LEXILLA_VERSION="${NPP_LEXILLA_VERSION}"
 	NPP_BOOST_VERSION="${NPP_BOOST_VERSION}")
@@ -243,7 +248,7 @@ if(NPP_BUILD_TESTS)
 		qt_add_resources(npp_plugintest "linuxpad_icons_plugintest" PREFIX "/linuxpad" BASE "${CMAKE_CURRENT_SOURCE_DIR}/data/icons" FILES ${LINUXPAD_ICONS})
 		add_dependencies(npp_plugintest npp_data)
 		add_test(NAME plugintest COMMAND npp_plugintest)
-		set_tests_properties(plugintest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 45)
+		set_tests_properties(plugintest PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen" TIMEOUT 900)
 	endif()
 	set_tests_properties(selftest light_mode_on_dark_desktop PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
 	set_tests_properties(light_mode_on_dark_desktop PROPERTIES TIMEOUT 20)

@@ -65,7 +65,8 @@ Windows modules need a source port to use this interface on Linux.
 
 ## How it works
 
-- **Host** (`src/PluginsManager.cpp`): loads the plugins of `<prefix>/lib/linuxpad++/plugins`,
+- **Host** (`src/PluginsManager.cpp`): loads the plugins chosen in Plugins Admin (`src/PluginsAdmin.cpp`, saved as
+  `[Plugins] enabled=` in `config.ini`; `$NPP_PLUGINS_ONLY` for the tests) among those of `<prefix>/lib/linuxpad++/plugins`,
   `~/.local/share/linuxpad++/plugins` and `$NPP_PLUGINS_DIR`, builds the Plugins menu
   (shortcuts of `FuncItem`, check marks), forwards the `NPPN_` and `SCN_` notifications
   and answers `NPPM_` messages, including docking

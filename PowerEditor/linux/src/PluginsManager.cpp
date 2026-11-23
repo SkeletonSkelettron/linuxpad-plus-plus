@@ -298,12 +298,12 @@ QString PluginsManager::pluginsConfigDir()
 	return dir;
 }
 
-void PluginsManager::loadPlugins()
+QList<PluginsManager::AvailablePlugin> PluginsManager::availablePlugins()
 {
-	// PluginsManager::loadPlugins(): plugins/<Name>/<Name>.so, in the order of the names.
-	// $NPP_PLUGINS_ONLY (folder names separated by ':') loads only those (self test).
-	const QStringList only = qEnvironmentVariable("NPP_PLUGINS_ONLY").split(QLatin1Char(':'), Qt::SkipEmptyParts);
+	// plugins/<Name>/<Name>.so of each plugins folder, in the order of the names; a name once (the first folder wins)
+	QList<AvailablePlugin> plugins;
 	QStringList seen;
+	const QString user = QDir::cleanPath(userPluginsDir());
 	for (const QString& dir : pluginsDirs())
 	{
 		const QFileInfoList folders = QDir(dir).entryInfoList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name | QDir::IgnoreCase);
@@ -312,12 +312,33 @@ void PluginsManager::loadPlugins()
 			const QString so = folder.absoluteFilePath() + QLatin1Char('/') + folder.fileName() + QStringLiteral(".so");
 			if (!QFileInfo::exists(so) || seen.contains(folder.fileName(), Qt::CaseInsensitive))
 				continue;
-			if (!only.isEmpty() && !only.contains(folder.fileName(), Qt::CaseInsensitive))
-				continue;
 			seen << folder.fileName();
-			loadPlugin(so);
+			plugins.append({folder.fileName(), so, QDir::cleanPath(dir) == user});
 		}
 	}
+	return plugins;
+}
+
+QList<PluginsManager::AvailablePlugin> PluginsManager::pluginsToLoad()
+{
+	// the plugins come with LinuxPad++ but are loaded only when the user chose them (Plugins Admin, saved in
+	// config.ini); $NPP_PLUGINS_ONLY (folder names separated by ':') chooses them for the tests
+	const QStringList only = qEnvironmentVariable("NPP_PLUGINS_ONLY").split(QLatin1Char(':'), Qt::SkipEmptyParts);
+	const QStringList chosen = only.isEmpty() ? Npp::prefs().enabledPlugins : only;
+	QList<AvailablePlugin> plugins;
+	for (const AvailablePlugin& p : availablePlugins())
+	{
+		if (chosen.contains(p.folder, Qt::CaseInsensitive))
+			plugins << p;
+	}
+	return plugins;
+}
+
+void PluginsManager::loadPlugins()
+{
+	// PluginsManager::loadPlugins(): plugins/<Name>/<Name>.so, the ones the user chose
+	for (const AvailablePlugin& p : pluginsToLoad())
+		loadPlugin(p.path);
 	std::sort(_plugins.begin(), _plugins.end(), [](const auto& a, const auto& b)
 	{
 		return a->name.compare(b->name, Qt::CaseInsensitive) < 0;
@@ -438,7 +459,10 @@ void PluginsManager::addMenus()
 	}
 	if (!pluginsMenu)
 		return;
-	QAction* before = pluginsMenu->actions().value(0);
+	QAction* before = pluginsMenu->actions().value(0); // Plugins Admin...
+	if (!_plugins.empty())
+		pluginsMenu->insertSeparator(before); // like Notepad++: the plugins, then Plugins Admin...
+	before = pluginsMenu->actions().value(0);
 	for (auto& p : _plugins)
 	{
 		p->menu = new QMenu(p->name, pluginsMenu);
@@ -647,6 +671,13 @@ bool PluginsManager::importPlugins(const QStringList& files, QString* error)
 		}
 		if (!output.commit())
 			return failed();
+		// importing a plugin is choosing it: loaded from the next start, like the ones ticked in Plugins Admin
+		NppPrefs& prefs = Npp::prefs();
+		if (!prefs.enabledPlugins.contains(fi.completeBaseName(), Qt::CaseInsensitive))
+		{
+			prefs.enabledPlugins << fi.completeBaseName();
+			prefs.save();
+		}
 	}
 	return true;
 }

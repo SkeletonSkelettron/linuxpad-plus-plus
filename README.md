@@ -48,6 +48,45 @@ Settings are stored in `~/.config/linuxpad++/`. The first start copies the setti
 
 ## Plugins
 
+LinuxPad++ comes with 53 ported Notepad++ plugins. They are installed with it (also in the Flatpak), but
+LinuxPad++ loads only the plugins you choose, and none at the first start.
+
+### Choose the plugins
+
+1. Open **Plugins → Plugins Admin…**. It lists the plugins of the plugins folders: the ones that come with
+   LinuxPad++ and the ones you installed yourself.
+2. Tick the plugins you want (the search box filters the list) and press **OK**. Untick a plugin to stop loading it.
+3. Restart LinuxPad++. The chosen plugins are in the **Plugins** menu.
+
+Your choice is saved in the settings, `~/.config/linuxpad++/config.ini`
+(`~/.var/app/io.github.SkeletonSkelettron.LinuxPadPlusPlus/config/linuxpad++/config.ini` in the Flatpak):
+
+```ini
+[Plugins]
+enabled=ComparePlus, XMLTools, DSpellCheck
+```
+
+You can also edit that line while LinuxPad++ is closed: the names are the folder names of the plugins.
+`linuxpad++ -noPlugin` starts without any plugin.
+
+### Plugins folders
+
+| Plugins | Folder |
+|---|---|
+| Bundled with LinuxPad++ | `<prefix>/lib/linuxpad++/plugins/<Name>/<Name>.so` (`~/.local/lib/linuxpad++/plugins` for a user install, `/app/lib/linuxpad++/plugins` in the Flatpak) |
+| Installed by you | `~/.local/share/linuxpad++/plugins/<Name>/<Name>.so` (`~/.var/app/io.github.SkeletonSkelettron.LinuxPadPlusPlus/data/linuxpad++/plugins` in the Flatpak) |
+
+### Install another plugin
+
+- A single `.so` file: **Settings → Import → Import plugin(s)…** copies it to your plugins folder and chooses it;
+  it is loaded from the next start.
+- A plugin with more files: copy its folder (`<Name>/` with `<Name>.so` inside) into your plugins folder
+  (**Plugins → Plugins Admin… → Open Plugins Folder**), then tick it in Plugins Admin and restart.
+- Only Linux plugins built with the LinuxPad++ plugin SDK (`.so`) work; the Windows `.dll` plugins of Notepad++
+  do not. How plugins are ported: [PowerEditor/linux/PLUGINS_STATUS.md](PowerEditor/linux/PLUGINS_STATUS.md).
+
+### Bundled plugins
+
 | Plugin | Folder | Upstream | License |
 |---|---|---|---|
 | Auto Detect Indention | [`nppAutoDetectIndent`](PowerEditor/linux/plugins/nppAutoDetectIndent) | [Chocobo1/nppAutoDetectIndent](https://github.com/Chocobo1/nppAutoDetectIndent) | GPL v3 or later |

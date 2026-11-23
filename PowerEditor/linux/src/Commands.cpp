@@ -19,6 +19,7 @@
 // AutoCompletion.cpp.
 
 #include "MainWindow.h"
+#include "PluginsAdmin.h"
 #include "PluginsManager.h"
 
 #include <algorithm>
@@ -759,6 +760,7 @@ void MainWindow::registerCommands()
 			QMessageBox::information(this, QStringLiteral("Import plugin(s)"),
 				QStringLiteral("The plugin(s) will be loaded the next time LinuxPad++ starts."));
 	});
+	on(IDM_SETTING_PLUGINADM, [this] { PluginsAdmin::exec(this, _pluginsManager); });
 	on(IDM_SETTING_OPENPLUGINSDIR, [this]
 	{
 		// the folder of the installed plugins, else the one of the user's plugins
@@ -3595,7 +3597,7 @@ void MainWindow::helpAbout()
 	box.setWindowTitle(QStringLiteral("About LinuxPad++"));
 	box.setIconPixmap(QIcon(QStringLiteral(":/linuxpad/linuxpad-plus-plus-128.png")).pixmap(128, 128));
 	box.setTextFormat(Qt::RichText);
-	box.setText(QStringLiteral("<h3>LinuxPad++ v%1</h3>"
+	box.setText(QStringLiteral("<h3>LinuxPad++ v%5</h3>"
 	                           "<p>The native Linux (Qt %2) edition of Notepad++ v%1<br>Build time: %3 - %4</p>"
 	                           "<p>Home: <a href=\"https://github.com/SkeletonSkelettron/linuxpad-plus-plus\">https://github.com/SkeletonSkelettron/linuxpad-plus-plus</a><br>"
 	                           "Based on Notepad++ by Don Ho: <a href=\"https://notepad-plus-plus.org/\">https://notepad-plus-plus.org/</a></p>"
@@ -3603,7 +3605,7 @@ void MainWindow::helpAbout()
 	                           "<p>This program is free software; you can redistribute it and/or modify it under the terms of the "
 	                           "GNU General Public License as published by the Free Software Foundation; either version 3 of the "
 	                           "License, or (at your option) any later version.</p>")
-		.arg(Npp::version(), QString::fromLatin1(qVersion()), QStringLiteral(__DATE__), QStringLiteral(__TIME__)));
+		.arg(Npp::version(), QString::fromLatin1(qVersion()), QStringLiteral(__DATE__), QStringLiteral(__TIME__), Npp::linuxPadVersion()));
 	box.exec();
 }
 
@@ -3611,7 +3613,7 @@ void MainWindow::helpDebugInfo()
 {
 	const NppPrefs& p = Npp::prefs();
 	QString info;
-	info += QStringLiteral("LinuxPad++ v%1   (%2-bit), based on Notepad++ v%1\n").arg(Npp::version()).arg(QSysInfo::WordSize);
+	info += QStringLiteral("LinuxPad++ v%1   (%2-bit), based on Notepad++ v%3\n").arg(Npp::linuxPadVersion()).arg(QSysInfo::WordSize).arg(Npp::version());
 	info += QStringLiteral("Build time: %1 - %2\n").arg(QStringLiteral(__DATE__), QStringLiteral(__TIME__));
 	info += QStringLiteral("Front end: Qt %1 (native Linux)\n").arg(QString::fromLatin1(qVersion()));
 	info += QStringLiteral("Scintilla/Lexilla included: %1/%2\n").arg(QStringLiteral(NPP_SCINTILLA_VERSION), QStringLiteral(NPP_LEXILLA_VERSION));
