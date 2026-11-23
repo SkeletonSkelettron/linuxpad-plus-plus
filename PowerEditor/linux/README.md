@@ -1,6 +1,6 @@
-# Notepad++ for Linux (Qt 6)
+# LinuxPad++ (Notepad++ for Linux, Qt 6)
 
-A native Linux front end for Notepad++. The Win32 user interface of
+LinuxPad++ is a native Linux front end for Notepad++. The Win32 user interface of
 `PowerEditor/src` is replaced by Qt code in `PowerEditor/linux/src`. These parts
 are used as they are:
 
@@ -18,7 +18,7 @@ time from `Notepad_plus.rc`, `Parameters.cpp`, `localization.cpp` and
 ## Build on Fedora
 
 ```bash
-sudo dnf install gcc-c++ cmake ninja-build python3 qt6-qtbase-devel qt6-qt5compat-devel
+sudo dnf install gcc-c++ cmake ninja-build python3 qt6-qtbase-devel qt6-qt5compat-devel pcre2-devel libxml2-devel
 ```
 
 Install `dotnet-sdk-10.0` to include JSONTools. Its headless engine runs with
@@ -33,7 +33,7 @@ cmake --build build-linux
 ```
 
 ```bash
-./build-linux/bin/notepad++
+./build-linux/bin/linuxpad++
 ```
 
 Install (binary, data files, desktop entry and icon). The desktop entry gets the
@@ -55,7 +55,7 @@ install step with `sudo`.
 
 The GitHub release provides a Flatpak bundle for Linux x86-64. Install the
 downloaded `.flatpak` file with `flatpak install --user ./<bundle>.flatpak`.
-The bundle includes all five plugins and the .NET runtime used by JSONTools.
+The Flatpak manifest packages the bundled Linux plugins and the .NET runtime used by JSONTools.
 
 To build the bundle from the repository root, install Flatpak Builder and the
 following dependencies from Flathub:
@@ -66,23 +66,23 @@ flatpak install --user flathub org.kde.Platform//6.10 org.kde.Sdk//6.10 \
 mkdir -p build-linux/flatpak
 flatpak-builder --user --force-clean --repo=build-linux/flatpak/repo \
     --state-dir=build-linux/flatpak/state build-linux/flatpak/app \
-    PowerEditor/linux/flatpak/io.github.SkeletonSkelettron.NotepadPlusPlus.yaml
+    PowerEditor/linux/flatpak/io.github.SkeletonSkelettron.LinuxPadPlusPlus.yaml
 flatpak build-bundle --runtime-repo=https://dl.flathub.org/repo/flathub.flatpakrepo \
-    build-linux/flatpak/repo build-linux/flatpak/notepad-plus-plus-linux-x86_64.flatpak \
-    io.github.SkeletonSkelettron.NotepadPlusPlus stable
+    build-linux/flatpak/repo build-linux/flatpak/linuxpad-plus-plus-x86_64.flatpak \
+    io.github.SkeletonSkelettron.LinuxPadPlusPlus stable
 ```
 
 ## Settings
 
 User settings, the session and the backups of unsaved documents are stored in
-`~/.config/notepad++/`. Put a `langs.xml` or `stylers.xml` there to override the
-shipped models. Imported themes go to `~/.config/notepad++/themes/`.
+`~/.config/linuxpad++/`. Put a `langs.xml` or `stylers.xml` there to override the
+shipped models. Imported themes go to `~/.config/linuxpad++/themes/`.
 
 ## Plugins
 
-The build includes MIME Tools, Converter, Auto Detect Indention, Diff Checker and
-JSONTools when the .NET 10 SDK is present. The Plugins menu lists the loaded
-modules. Other plugins need a source port that produces a Linux `.so` library.
+The Plugins menu lists the loaded modules. See the [bundled plugin list](PLUGINS_STATUS.md#bundled-modules)
+for their features. JSONTools builds when the .NET 10 SDK is present. Other plugins
+need a source port that produces a Linux `.so` library.
 
 - **Diff Checker > Compare…** compares two tabs, files from disk, or a tab against
   its saved copy. It includes unsaved changes, aligns lines and lets you jump

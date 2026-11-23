@@ -37,6 +37,7 @@
 
 // standard headers that use swprintf & co, before the Microsoft names are defined
 #include <algorithm>
+#include <climits>
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
@@ -68,6 +69,41 @@
 // wParam: buffer ID, lParam: NppBufferText* (or 0 to query length).
 // Copies UTF-8 bytes when capacity is sufficient. Returns length, or -1 for an invalid buffer.
 #define NPPM_LINUX_GETBUFFERTEXT   (NPPM_LINUX_FIRST + 7)
+// wParam: NppWndHook*, lParam: TRUE to add, FALSE to remove. The messages of the main window
+// (WM_COMMAND of the menus, the NPPM_ messages of plugins) go to hook first: SetWindowLongPtr
+// (GWLP_WNDPROC) and SetWindowSubclass of nppData._nppHandle use it.
+#define NPPM_LINUX_SUBCLASSNPP     (NPPM_LINUX_FIRST + 8)
+// wParam: buffer ID from NPPN_FILEBEFORESAVE. lParam: NppSaveFilter callback.
+// Invokes the callback synchronously for a writable buffer. The editor and
+// target path are borrowed only during that call, including for background tabs.
+#define NPPM_LINUX_FILTERBEFORESAVE (NPPM_LINUX_FIRST + 9)
+// wParam: NppWndMessage*. CallWindowProc of the procedure that a subclass of nppData._nppHandle
+// replaced: the message goes on to the next subclass, then to Notepad++. Every other message to
+// the main window starts again at the newest subclass, like SendMessage on Windows.
+#define NPPM_LINUX_CALLNEXT        (NPPM_LINUX_FIRST + 10)
+
+struct NppWndMessage
+{
+	unsigned int msg;
+	uintptr_t wParam;
+	intptr_t lParam;
+};
+
+struct NppSaveFormat
+{
+	enum Encoding { Legacy = 0, Utf8Bom, Utf16BigEndian, Utf16LittleEndian, Utf8 };
+	int eol;
+	int encoding;
+	int codepage;
+};
+
+using NppSaveFilter = void (*)(HWND editor, const wchar_t* targetPath, NppSaveFormat* format);
+
+struct NppWndHook
+{
+	intptr_t (*dispatch)(void* context, unsigned int msg, uintptr_t wParam, intptr_t lParam);
+	void* context;
+};
 
 struct NppBufferText
 {
@@ -92,5 +128,14 @@ struct NppScintillaNotify
 	void* context;
 };
 
+// like <windows.h> of Windows without WIN32_LEAN_AND_MEAN
+#ifndef WIN32_LEAN_AND_MEAN
+#include <shellapi.h>
+#include <commdlg.h>
+#endif
+
+#else
+// like winresrc.h of Windows: the styles of the common controls
+#include <commctrl.h>
 #endif // RC_INVOKED
 #endif // !_WIN32

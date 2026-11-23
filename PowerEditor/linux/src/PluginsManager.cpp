@@ -35,8 +35,10 @@
 #include <QPalette>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QScopedValueRollback>
 #include <QStandardPaths>
 #include <QStatusBar>
+#include <QThread>
 #include <QTimer>
 #include <QToolBar>
 
@@ -72,6 +74,7 @@ namespace
 	constexpr int kPluginsCmd = 22000;          // ID_PLUGINS_CMD
 	constexpr int kPluginsCmdLimit = 22999;     // ID_PLUGINS_CMD_LIMIT
 	constexpr int kPluginsCmdDynamic = 23000;   // ID_PLUGINS_CMD_DYNAMIC
+	constexpr int kMaxExternalLexerName = 128;  // MAX_EXTERNAL_LEXER_NAME_LEN
 	constexpr int kPluginsCmdDynamicLimit = 24999;
 	constexpr int kMarkerPlugins = 1;           // MARKER_PLUGINS
 	constexpr int kMarkerPluginsLimit = 15;
@@ -86,6 +89,23 @@ namespace
 	QString fromW(intptr_t s)
 	{
 		return fromW(reinterpret_cast<const wchar_t*>(s));
+	}
+
+	// a path of a plugin: plugins written for Windows build them with '\\' (and "C:")
+	QString pathW(const wchar_t* s)
+	{
+		QString p = fromW(s);
+		if (p.isEmpty() || !p.contains(QLatin1Char('\\')) || QFileInfo::exists(p))
+			return p;
+		p.replace(QLatin1Char('\\'), QLatin1Char('/'));
+		if (p.size() >= 2 && p[1] == QLatin1Char(':') && p[0].isLetter())
+			p = p.mid(2);
+		return p;
+	}
+
+	QString pathW(intptr_t s)
+	{
+		return pathW(reinterpret_cast<const wchar_t*>(s));
 	}
 
 	// copies s with its nul character into dst (room for cap wchar_t)
@@ -260,7 +280,7 @@ QStringList PluginsManager::pluginsDirs()
 	const QString env = qEnvironmentVariable("NPP_PLUGINS_DIR");
 	if (!env.isEmpty())
 		dirs << env.split(QLatin1Char(':'), Qt::SkipEmptyParts);
-	dirs << QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/notepad++/plugins"));
+	dirs << QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../lib/linuxpad++/plugins"));
 	dirs << userPluginsDir();
 	dirs.removeDuplicates();
 	return dirs;
@@ -268,7 +288,7 @@ QStringList PluginsManager::pluginsDirs()
 
 QString PluginsManager::userPluginsDir()
 {
-	return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/notepad++/plugins");
+	return QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation) + QStringLiteral("/linuxpad++/plugins");
 }
 
 QString PluginsManager::pluginsConfigDir()
@@ -280,7 +300,9 @@ QString PluginsManager::pluginsConfigDir()
 
 void PluginsManager::loadPlugins()
 {
-	// PluginsManager::loadPlugins(): plugins/<Name>/<Name>.so, in the order of the names
+	// PluginsManager::loadPlugins(): plugins/<Name>/<Name>.so, in the order of the names.
+	// $NPP_PLUGINS_ONLY (folder names separated by ':') loads only those (self test).
+	const QStringList only = qEnvironmentVariable("NPP_PLUGINS_ONLY").split(QLatin1Char(':'), Qt::SkipEmptyParts);
 	QStringList seen;
 	for (const QString& dir : pluginsDirs())
 	{
@@ -289,6 +311,8 @@ void PluginsManager::loadPlugins()
 		{
 			const QString so = folder.absoluteFilePath() + QLatin1Char('/') + folder.fileName() + QStringLiteral(".so");
 			if (!QFileInfo::exists(so) || seen.contains(folder.fileName(), Qt::CaseInsensitive))
+				continue;
+			if (!only.isEmpty() && !only.contains(folder.fileName(), Qt::CaseInsensitive))
 				continue;
 			seen << folder.fileName();
 			loadPlugin(so);
@@ -309,7 +333,7 @@ bool PluginsManager::loadPlugin(const QString& path)
 	auto fail = [&](const QString& why)
 	{
 		_errors << QStringLiteral("%1: %2").arg(path, why);
-		qWarning("Notepad++: plugin %s not loaded: %s", qPrintable(path), qPrintable(why));
+		qWarning("LinuxPad++: plugin %s not loaded: %s", qPrintable(path), qPrintable(why));
 		return false;
 	};
 
@@ -337,7 +361,7 @@ bool PluginsManager::loadPlugin(const QString& path)
 	if (auto initialize = reinterpret_cast<BOOL (*)()>(p->lib->resolve("nppLinuxInitialize")); initialize && !initialize())
 		return fail(QStringLiteral("Plugin initialization failed."));
 	if (!isUnicode || !isUnicode())
-		return fail(QStringLiteral("This ANSI plugin is not compatible with your Unicode Notepad++."));
+		return fail(QStringLiteral("This ANSI plugin is not compatible with your Unicode LinuxPad++."));
 	p->name = fromW(p->getName());
 
 	sdk::NppData data;
@@ -351,6 +375,45 @@ bool PluginsManager::loadPlugin(const QString& path)
 		return fail(QStringLiteral("Missing \"FuncItems\" array, or the nb of Function Item is not set correctly"));
 	if (_nextCmdId + p->nbItems > kPluginsCmdLimit)
 		return fail(QStringLiteral("Too many plugin commands"));
+
+	// a lexer plugin (Lexilla protocol): its lexers become the languages L_EXTERNAL + n, styled by
+	// plugins/Config/<module>.xml (here ~/.config/linuxpad++/plugins/config/<module>.xml, else the
+	// folder of the plugin or its Config folder)
+	using GetLexerCountFn = int (*)();
+	using GetLexerNameFn = void (*)(unsigned int index, char* name, int length);
+	if (auto getLexerCount = reinterpret_cast<GetLexerCountFn>(p->lib->resolve("GetLexerCount")))
+	{
+		auto getLexerName = reinterpret_cast<GetLexerNameFn>(p->lib->resolve("GetLexerName"));
+		if (!getLexerName)
+			return fail(QStringLiteral("Loading GetLexerName function failed."));
+		auto createLexer = reinterpret_cast<ExternalLexer::CreateLexerFn>(p->lib->resolve("CreateLexer"));
+		if (!createLexer)
+			return fail(QStringLiteral("Loading CreateLexer function failed."));
+		const QString xmlName = p->folder + QStringLiteral(".xml");
+		const QString folder = QFileInfo(path).absolutePath();
+		QString xmlPath;
+		for (const QString& candidate : {pluginsConfigDir() + QLatin1Char('/') + xmlName, folder + QLatin1Char('/') + xmlName,
+				folder + QStringLiteral("/Config/") + xmlName})
+		{
+			if (QFileInfo::exists(candidate))
+			{
+				xmlPath = candidate;
+				break;
+			}
+		}
+		if (xmlPath.isEmpty())
+			return fail(QStringLiteral("plugins/Config/%1 is missing.").arg(xmlName));
+		StyleManager& sm = StyleManager::instance();
+		const int count = std::min(getLexerCount(), StyleManager::maxExternalLexers);
+		for (int i = 0; i < count; ++i)
+		{
+			char lexerName[kMaxExternalLexerName] = {};
+			getLexerName(static_cast<unsigned int>(i), lexerName, kMaxExternalLexerName);
+			sm.addExternalLexer(QString::fromUtf8(lexerName), createLexer);
+		}
+		if (!sm.loadExternalLexerConfig(xmlPath))
+			_errors << QStringLiteral("%1: %2 failed to load.").arg(path, xmlPath);
+	}
 	for (int i = 0; i < p->nbItems; ++i)
 	{
 		p->items[i]._cmdID = _nextCmdId++;
@@ -436,7 +499,7 @@ void PluginsManager::notifyReady()
 
 void PluginsManager::notify(unsigned int code, uptr_t idFrom, void* hwndFrom)
 {
-	if (_plugins.empty())
+	if (_plugins.empty() || _destroying)
 		return;
 	SCNotification scn{};
 	scn.nmhdr.code = code;
@@ -451,9 +514,16 @@ void PluginsManager::notifyBuffer(unsigned int code, const Buffer* buf)
 	notify(code, reinterpret_cast<uptr_t>(buf));
 }
 
+void PluginsManager::notifyBeforeSave(Buffer* buf, const QString& target)
+{
+	const QScopedValueRollback bufferScope(_savingBuffer, buf);
+	const QScopedValueRollback targetScope(_saveTarget, target);
+	notifyBuffer(NPPN_FILEBEFORESAVE, buf);
+}
+
 void PluginsManager::relayScintilla(const Scintilla::NotificationData* data, int view)
 {
-	if (_plugins.empty())
+	if (_plugins.empty() || _destroying)
 		return;
 	SCNotification scn;
 	std::memcpy(&scn, data, sizeof(scn));
@@ -686,6 +756,127 @@ Buffer* PluginsManager::bufferOf(uintptr_t id) const
 
 intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lParam)
 {
+	// windows of plugins hidden while the main window is destroyed: nothing to answer with
+	if (_destroying)
+		return 0;
+	if (msg == NPPM_LINUX_SUBCLASSNPP)
+	{
+		// a plugin subclasses the main window (SetWindowLongPtr / SetWindowSubclass)
+		const auto* hook = reinterpret_cast<const NppWndHook*>(wParam);
+		if (!hook || !hook->dispatch)
+			return FALSE;
+		auto it = std::find_if(_wndHooks.begin(), _wndHooks.end(), [hook](const WndHook& h) { return h.context == hook->context; });
+		if (lParam && it == _wndHooks.end())
+			_wndHooks.push_back(WndHook{hook->dispatch, hook->context});
+		else if (!lParam && it != _wndHooks.end())
+			_wndHooks.erase(it);
+		return TRUE;
+	}
+	if (msg == NPPM_LINUX_CALLNEXT)
+	{
+		// CallWindowProc of the original procedure in a subclass: the next subclass, then Notepad++
+		const auto* next = reinterpret_cast<const NppWndMessage*>(wParam);
+		if (!next)
+			return 0;
+		if (_wndHookLevel == 0) // not called from a subclass procedure: Notepad++ itself
+			return handleMessage(next->msg, next->wParam, next->lParam);
+		return dispatchHooks(next->msg, next->wParam, next->lParam);
+	}
+	// any other message (also one that a subclass procedure sends while it handles another one)
+	// starts at the newest subclass, like SendMessage on Windows
+	const size_t saved = _wndHookLevel;
+	_wndHookLevel = 0;
+	const intptr_t r = dispatchHooks(msg, wParam, lParam);
+	_wndHookLevel = saved;
+	return r;
+}
+
+// SendMessageW of the plugin SDK (windows.h), which this file uses too: a message sent from
+// another thread is handled on the GUI thread (weak: the npp_win32 library has the same ones)
+__attribute__((weak)) bool npp_isGuiThread()
+{
+	return !qApp || QThread::currentThread() == qApp->thread();
+}
+
+__attribute__((weak)) LRESULT npp_sendFromThread(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	LRESULT r = 0;
+	QMetaObject::invokeMethod(qApp, [&] { r = hWnd->send(hWnd, msg, wParam, lParam); }, Qt::BlockingQueuedConnection);
+	return r;
+}
+
+int PluginsManager::langTypeOf(const Buffer* b)
+{
+	// the lexers of the lexer plugins are L_EXTERNAL + their index for the plugins, like Notepad++
+	if (b->lang == L_EXTERNAL)
+	{
+		const int index = StyleManager::instance().externalLexerIndex(b->udlName);
+		return L_EXTERNAL + std::max(index, 0);
+	}
+	return static_cast<int>(b->lang);
+}
+
+QString PluginsManager::externalLexerName(intptr_t langType)
+{
+	const auto& lexers = StyleManager::instance().externalLexers();
+	const intptr_t index = langType - L_EXTERNAL;
+	if (index < 0 || index >= static_cast<intptr_t>(lexers.size()))
+		return QString();
+	return lexers[static_cast<size_t>(index)].name;
+}
+
+intptr_t PluginsManager::dispatchHooks(unsigned int msg, uintptr_t wParam, intptr_t lParam)
+{
+	// the procedures of the subclasses, newest first, then Notepad++
+	if (_wndHookLevel < _wndHooks.size())
+	{
+		const WndHook hook = _wndHooks[_wndHooks.size() - 1 - _wndHookLevel];
+		++_wndHookLevel;
+		const intptr_t r = hook.dispatch(hook.context, msg, wParam, lParam);
+		--_wndHookLevel;
+		return r;
+	}
+	return handleMessage(msg, wParam, lParam);
+}
+
+void PluginsManager::editorContextMenu(int view, const QPoint& globalPos)
+{
+	NppHandle* sci = scintillaHandle(view);
+	message(WM_CONTEXTMENU, reinterpret_cast<uintptr_t>(sci),
+		static_cast<intptr_t>(MAKELPARAM(static_cast<short>(globalPos.x()), static_cast<short>(globalPos.y()))));
+}
+
+void PluginsManager::initMenuPopup(QMenu* menu)
+{
+	if (_wndHooks.empty() || !menu)
+		return;
+	// one handle for the temporary menus: it points to the menu while it opens, then to nothing
+	if (!_popupMenuHandle)
+	{
+		_popupMenuHandle = createHandle(NPP_HANDLE_MENU, nullptr);
+		_popupMenuHandle->send = menuSend;
+	}
+	_popupMenuHandle->widget = menu;
+	QObject::connect(menu, &QObject::destroyed, this, [this, menu]
+	{
+		if (_popupMenuHandle && _popupMenuHandle->widget == menu)
+			_popupMenuHandle->widget = nullptr;
+	});
+	message(WM_INITMENUPOPUP, reinterpret_cast<uintptr_t>(_popupMenuHandle), 0); // position 0, not the window menu
+}
+
+bool PluginsManager::routeCommand(int id)
+{
+	if (_wndHooks.empty() || _wndHookLevel > 0 || _routing)
+		return false;
+	_routing = true;
+	message(WM_COMMAND, static_cast<uintptr_t>(id), 0);
+	_routing = false;
+	return true;
+}
+
+intptr_t PluginsManager::handleMessage(unsigned int msg, uintptr_t wParam, intptr_t lParam)
+{
 	// NppBigSwitch.cpp, the NPPM_ messages
 	MainWindow* mw = _mw;
 	switch (msg)
@@ -697,7 +888,13 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 			if (id >= kPluginsCmdDynamic && id <= kPluginsCmdDynamicLimit)
 				runCommand(id);
 			else
+			{
+				// the subclasses have had it already (message())
+				const bool routing = _routing;
+				_routing = true;
 				mw->command(id);
+				_routing = routing;
+			}
 			return TRUE;
 		}
 
@@ -708,11 +905,13 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 
 		case NPPM_GETCURRENTLANGTYPE:
 			if (lParam)
-				*reinterpret_cast<int*>(lParam) = mw->currentBuffer() ? static_cast<int>(mw->currentBuffer()->lang) : L_TEXT;
+				*reinterpret_cast<int*>(lParam) = mw->currentBuffer() ? langTypeOf(mw->currentBuffer()) : L_TEXT;
 			return TRUE;
 
 		case NPPM_SETCURRENTLANGTYPE:
-			if (lParam >= 0 && lParam < StyleManager::langCount() && lParam != L_USER)
+			if (const QString external = externalLexerName(lParam); !external.isEmpty())
+				mw->languageSet(L_EXTERNAL, external); // L_EXTERNAL + n: the lexer n of the lexer plugins
+			else if (lParam >= 0 && lParam < StyleManager::langCount() && lParam != L_USER && lParam != L_EXTERNAL)
 				mw->languageSet(static_cast<LangType>(lParam));
 			return TRUE;
 
@@ -764,7 +963,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 		case NPPM_GETNBSESSIONFILES:
 		case NPPM_GETSESSIONFILES:
 		{
-			const QString path = fromW(lParam);
+			const QString path = pathW(lParam);
 			pugi::xml_document doc;
 			const bool ok = !path.isEmpty() && doc.load_file(QFile::encodeName(path).constData());
 			if (msg == NPPM_GETNBSESSIONFILES && wParam)
@@ -799,16 +998,16 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 			pugi::xml_node mainView = session.append_child("mainView");
 			mainView.append_attribute("activeIndex") = 0;
 			for (int i = 0; i < si->nbFile; ++i)
-				mainView.append_child("File").append_attribute("filename") = fromW(si->files[i]).toUtf8().constData();
+				mainView.append_child("File").append_attribute("filename") = pathW(si->files[i]).toUtf8().constData();
 			session.append_child("subView").append_attribute("activeIndex") = 0;
-			if (!doc.save_file(QFile::encodeName(fromW(si->sessionFilePathName)).constData()))
+			if (!doc.save_file(QFile::encodeName(pathW(si->sessionFilePathName)).constData()))
 				return 0;
 			return reinterpret_cast<intptr_t>(si->sessionFilePathName);
 		}
 
 		case NPPM_SAVECURRENTSESSION:
 		{
-			const QString path = fromW(lParam);
+			const QString path = pathW(lParam);
 			if (path.isEmpty())
 				return 0;
 			mw->writeSession(path, false);
@@ -816,7 +1015,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 		}
 
 		case NPPM_LOADSESSION:
-			return mw->readSession(fromW(lParam)) ? TRUE : FALSE;
+			return mw->readSession(pathW(lParam)) ? TRUE : FALSE;
 
 		case NPPM_CREATESCINTILLAHANDLE:
 		{
@@ -911,11 +1110,25 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 			if (mw->_findDlg)
 			{
 				if (wParam)
-					mw->_findDlg->setDirectory(fromW(static_cast<intptr_t>(wParam)));
+					mw->_findDlg->setDirectory(pathW(static_cast<intptr_t>(wParam)));
 				if (lParam)
 					mw->_findDlg->setFilters(fromW(lParam));
 			}
 			return TRUE;
+		}
+
+		case WM_CONTEXTMENU:
+		{
+			// Notepad++ (NppBigSwitch.cpp): the context menu of the editing view the message comes from
+			for (int view = 0; view <= 1; ++view) // MAIN_VIEW, SUB_VIEW
+			{
+				if (reinterpret_cast<uintptr_t>(scintillaHandle(view)) == wParam)
+				{
+					mw->showEditorContextMenu(QPoint(static_cast<short>(LOWORD(lParam)), static_cast<short>(HIWORD(lParam))));
+					return TRUE;
+				}
+			}
+			return FALSE;
 		}
 
 		case NPPM_DMMREGASDCKDLG:
@@ -979,7 +1192,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 
 		case NPPM_RELOADFILE:
 		{
-			Buffer* b = mw->findBuffer(fromW(lParam));
+			Buffer* b = mw->findBuffer(pathW(lParam));
 			if (!b)
 				return FALSE;
 			mw->reloadBuffer(b);
@@ -988,7 +1201,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 
 		case NPPM_SWITCHTOFILE:
 		{
-			Buffer* b = mw->findBuffer(fromW(lParam));
+			Buffer* b = mw->findBuffer(pathW(lParam));
 			if (!b)
 				return FALSE;
 			mw->activateBuffer(b);
@@ -1009,7 +1222,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 
 		case NPPM_SAVEFILE:
 		{
-			Buffer* b = mw->findBuffer(fromW(lParam));
+			Buffer* b = mw->findBuffer(pathW(lParam));
 			if (!b)
 				return FALSE;
 			return mw->saveBuffer(b) ? TRUE : FALSE;
@@ -1018,7 +1231,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 		case NPPM_SAVECURRENTFILEAS:
 		{
 			Buffer* b = mw->currentBuffer();
-			const QString path = fromW(lParam);
+			const QString path = pathW(lParam);
 			if (!b || path.isEmpty())
 				return FALSE;
 			return mw->saveBuffer(b, false, wParam != 0, path) ? TRUE : FALSE;
@@ -1121,6 +1334,54 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 
 		case NPPM_LINUX_PLUGINWIDGETPARENT:
 			return reinterpret_cast<intptr_t>(static_cast<QWidget*>(mw));
+
+		case NPPM_LINUX_FILTERBEFORESAVE:
+		{
+			Buffer* b = bufferOf(wParam);
+			const auto filter = reinterpret_cast<NppSaveFilter>(lParam);
+			if (!filter || !b || b != _savingBuffer || _saveTarget.isEmpty() || b->isReadOnly())
+				return FALSE;
+			const std::wstring target = _saveTarget.toStdWString();
+			NppSaveFormat format{b->eol, static_cast<int>(b->unicode), b->codepage};
+			// The callback can modify the saved document without activating a tab.
+			// A filter may still dispatch ordinary Scintilla notifications while editing.
+			const QScopedValueRollback bufferScope(_savingBuffer, static_cast<Buffer*>(nullptr));
+			mw->withDocument(b, [&](EditView* editor)
+			{
+				NppHandle editorHandle;
+				editorHandle.kind = NPP_HANDLE_SCINTILLA;
+				editorHandle.widget = editor;
+				editorHandle.owner = _nppHandle;
+				editorHandle.send = sciSend;
+				filter(&editorHandle, target.c_str(), &format);
+				b->dirty = b->forcedDirty || editor->ex(SCI_GETMODIFY);
+			});
+			if (format.eol >= SC_EOL_CRLF && format.eol <= SC_EOL_LF)
+			{
+				b->eol = format.eol;
+				for (int view : {0, 1})
+				{
+					if (mw->viewCurrent(view) == b)
+						mw->viewEdit(view)->ex(SCI_SETEOLMODE, format.eol);
+				}
+			}
+			if (format.encoding >= 0 && format.encoding <= static_cast<int>(UniMode::uni16LE_NoBOM)
+				&& (format.encoding != NppSaveFormat::Legacy || FileIO::isCodepageSupported(format.codepage))
+				&& (format.encoding != static_cast<int>(b->unicode) || format.codepage != b->codepage))
+			{
+				b->unicode = static_cast<UniMode>(format.encoding);
+				b->codepage = format.codepage;
+				b->dirty = b->forcedDirty = true;
+			}
+			mw->updateBufferTabs(b);
+			if (b == mw->currentBuffer())
+			{
+				mw->updateTitle();
+				mw->updateStatusBar();
+				mw->updateMenuState();
+			}
+			return TRUE;
+		}
 
 		case NPPM_LINUX_GETBUFFERTEXT:
 		{
@@ -1298,7 +1559,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 			if (!b || b->isUntitled())
 				return FALSE;
 			if (lParam && b->dirty && QMessageBox::question(mw, QStringLiteral("Reload"),
-				QStringLiteral("Are you sure you want to reload the current file and lose the changes made in Notepad++?")) != QMessageBox::Yes)
+				QStringLiteral("Are you sure you want to reload the current file and lose the changes made in LinuxPad++?")) != QMessageBox::Yes)
 				return FALSE;
 			mw->reloadBuffer(b);
 			return TRUE;
@@ -1307,7 +1568,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 		case NPPM_GETBUFFERLANGTYPE:
 		{
 			const Buffer* b = bufferOf(wParam);
-			return b ? static_cast<intptr_t>(b->lang) : -1;
+			return b ? static_cast<intptr_t>(langTypeOf(b)) : -1;
 		}
 
 		case NPPM_SETBUFFERLANGTYPE:
@@ -1402,7 +1663,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 		}
 
 		case NPPM_DOOPEN:
-			return mw->openFile(fromW(lParam)) ? TRUE : FALSE;
+			return mw->openFile(pathW(lParam)) ? TRUE : FALSE;
 
 		case NPPM_GETCURRENTNATIVELANGENCODING:
 			return 65001; // CP_UTF8: the nativeLang files are UTF-8
@@ -1439,7 +1700,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 		case NPPM_GETLANGUAGEDESC:
 		{
 			const LangType lang = static_cast<LangType>(wParam);
-			QString name;
+			QString name = externalLexerName(static_cast<intptr_t>(wParam)); // Notepad_plus::getLangDesc(): the name of the lexer
 			if (lang == L_USER && mw->currentBuffer() && mw->currentBuffer()->lang == L_USER)
 				name = mw->currentBuffer()->udlName;
 			if (name.isEmpty())
@@ -1464,7 +1725,7 @@ intptr_t PluginsManager::message(unsigned int msg, uintptr_t wParam, intptr_t lP
 			return (mw->_docListDock && !mw->_docListDock->isHidden()) ? TRUE : FALSE;
 
 		case NPPM_GETAPPDATAPLUGINSALLOWED:
-			return TRUE; // ~/.local/share/notepad++/plugins is always looked at
+			return TRUE; // ~/.local/share/linuxpad++/plugins is always looked at
 
 		case NPPM_GETCURRENTVIEW:
 			return mw->activeView();

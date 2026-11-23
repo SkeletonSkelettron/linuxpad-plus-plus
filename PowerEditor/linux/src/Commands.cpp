@@ -271,7 +271,7 @@ void MainWindow::registerCommands()
 		if (_current->dirty)
 		{
 			const auto answer = QMessageBox::question(this, QStringLiteral("Reload"),
-				QStringLiteral("Are you sure you want to reload the current file and lose the changes made in Notepad++?"));
+				QStringLiteral("Are you sure you want to reload the current file and lose the changes made in LinuxPad++?"));
 			if (answer != QMessageBox::Yes)
 				return;
 		}
@@ -749,7 +749,7 @@ void MainWindow::registerCommands()
 	{
 		// Notepad_plus::importPlugins(): copied to the plugins folder, loaded at the next launch
 		const QStringList files = QFileDialog::getOpenFileNames(this, QStringLiteral("Import plugin(s)"), QDir::homePath(),
-			QStringLiteral("Notepad++ plugin (*.so)"));
+			QStringLiteral("LinuxPad++ plugin (*.so)"));
 		if (files.isEmpty())
 			return;
 		QString error;
@@ -757,7 +757,7 @@ void MainWindow::registerCommands()
 			QMessageBox::warning(this, QStringLiteral("Import plugin(s)"), error);
 		else
 			QMessageBox::information(this, QStringLiteral("Import plugin(s)"),
-				QStringLiteral("The plugin(s) will be loaded the next time Notepad++ starts."));
+				QStringLiteral("The plugin(s) will be loaded the next time LinuxPad++ starts."));
 	});
 	on(IDM_SETTING_OPENPLUGINSDIR, [this]
 	{
@@ -2930,7 +2930,7 @@ void MainWindow::languageSet(LangType lang, const QString& udlName)
 	if (!_current)
 		return;
 	_current->lang = lang;
-	_current->udlName = (lang == L_USER) ? udlName : QString();
+	_current->udlName = (lang == L_USER || lang == L_EXTERNAL) ? udlName : QString(); // the UDL or the lexer plugin
 	_edit->defineDocType(lang, _current->udlName);
 	_edit->restoreHiddenLines(); // Notepad_plus::setLanguage()
 	refreshOtherViews(_current);
@@ -3408,8 +3408,8 @@ void MainWindow::runDialog()
 		const std::pair<const char*, const char*> items[] = {
 			{"FULL_CURRENT_PATH", "Full path to active file"}, {"CURRENT_DIRECTORY", "Active file's directory"},
 			{"FILE_NAME", "Active file's name"}, {"NAME_PART", "File name without extension"}, {"EXT_PART", "File extension (with .)"},
-			{"CURRENT_WORD", "Selected word or word under caret"}, {"NPP_DIRECTORY", "notepad++ directory"},
-			{"NPP_FULL_FILE_PATH", "Full path of notepad++"}, {"CURRENT_LINE", "Line number of caret"},
+			{"CURRENT_WORD", "Selected word or word under caret"}, {"NPP_DIRECTORY", "LinuxPad++ directory"},
+			{"NPP_FULL_FILE_PATH", "Full path of LinuxPad++"}, {"CURRENT_LINE", "Line number of caret"},
 			{"CURRENT_COLUMN", "Column number of caret"}, {"CURRENT_LINESTR", "Current line text"}};
 		for (const auto& [var, desc] : items)
 		{
@@ -3576,28 +3576,29 @@ void MainWindow::helpCommandLine()
 {
 	QMessageBox::information(this, QStringLiteral("Command Line Arguments"),
 		QStringLiteral("Usage :\n\n"
-		               "notepad++ [--help] [-multiInst] [-nosession] [-lLanguage] [-nLineNumber] [-cColumnNumber]\n"
+		               "linuxpad++ [--help] [-multiInst] [-nosession] [-lLanguage] [-nLineNumber] [-cColumnNumber]\n"
 		               "          [-ro] [-alwaysOnTop] [filePath...]\n\n"
 		               "--help : This help message\n"
-		               "-multiInst : Launch another Notepad++ instance\n"
-		               "-nosession : Launch Notepad++ without previous session\n"
+		               "-multiInst : Launch another LinuxPad++ instance\n"
+		               "-nosession : Launch LinuxPad++ without previous session\n"
 		               "-l : Open file or display ghost typing with syntax highlighting of choice (e.g. -lcpp)\n"
 		               "-n : Scroll to indicated line on filePath\n"
 		               "-c : Scroll to indicated column on filePath\n"
 		               "-ro : Make the filePath read-only\n"
-		               "-alwaysOnTop : Make Notepad++ always on top\n"
+		               "-alwaysOnTop : Make LinuxPad++ always on top\n"
 		               "filePath : file or folder name to open (absolute or relative path name)"));
 }
 
 void MainWindow::helpAbout()
 {
 	QMessageBox box(this);
-	box.setWindowTitle(QStringLiteral("About Notepad++"));
-	box.setIconPixmap(QIcon(QStringLiteral(":/icons/npp.ico")).pixmap(64, 64));
+	box.setWindowTitle(QStringLiteral("About LinuxPad++"));
+	box.setIconPixmap(QIcon(QStringLiteral(":/linuxpad/linuxpad-plus-plus-128.png")).pixmap(128, 128));
 	box.setTextFormat(Qt::RichText);
-	box.setText(QStringLiteral("<h3>Notepad++ v%1</h3>"
-	                           "<p>Native Linux build (Qt %2)<br>Build time: %3 - %4</p>"
-	                           "<p>Home: <a href=\"https://notepad-plus-plus.org/\">https://notepad-plus-plus.org/</a></p>"
+	box.setText(QStringLiteral("<h3>LinuxPad++ v%1</h3>"
+	                           "<p>The native Linux (Qt %2) edition of Notepad++ v%1<br>Build time: %3 - %4</p>"
+	                           "<p>Home: <a href=\"https://github.com/SkeletonSkelettron/linuxpad-plus-plus\">https://github.com/SkeletonSkelettron/linuxpad-plus-plus</a><br>"
+	                           "Based on Notepad++ by Don Ho: <a href=\"https://notepad-plus-plus.org/\">https://notepad-plus-plus.org/</a></p>"
 	                           "<p>GNU General Public Licence</p>"
 	                           "<p>This program is free software; you can redistribute it and/or modify it under the terms of the "
 	                           "GNU General Public License as published by the Free Software Foundation; either version 3 of the "
@@ -3610,7 +3611,7 @@ void MainWindow::helpDebugInfo()
 {
 	const NppPrefs& p = Npp::prefs();
 	QString info;
-	info += QStringLiteral("Notepad++ v%1   (%2-bit)\n").arg(Npp::version()).arg(QSysInfo::WordSize);
+	info += QStringLiteral("LinuxPad++ v%1   (%2-bit), based on Notepad++ v%1\n").arg(Npp::version()).arg(QSysInfo::WordSize);
 	info += QStringLiteral("Build time: %1 - %2\n").arg(QStringLiteral(__DATE__), QStringLiteral(__TIME__));
 	info += QStringLiteral("Front end: Qt %1 (native Linux)\n").arg(QString::fromLatin1(qVersion()));
 	info += QStringLiteral("Scintilla/Lexilla included: %1/%2\n").arg(QStringLiteral(NPP_SCINTILLA_VERSION), QStringLiteral(NPP_LEXILLA_VERSION));

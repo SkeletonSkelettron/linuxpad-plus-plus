@@ -26,6 +26,8 @@
 #include "Docking.h"
 #include "NppPluginQt.h"
 
+#include <wininet.h>
+
 #include "TestPlugin.h"
 
 namespace
@@ -139,6 +141,31 @@ extern "C" __declspec(dllexport) LRESULT messageProc(UINT msg, WPARAM wParam, LP
 		auto* info = reinterpret_cast<CommunicationInfo*>(lParam);
 		if (info && info->internalMsg == TestPluginReport::kGetReport && info->info)
 			*static_cast<TestPluginReport*>(info->info) = report;
+		if (info && info->internalMsg == TestPluginInet::kGet && info->info)
+		{
+			// the WinInet of the SDK, like a plugin that downloads something
+			auto* get = static_cast<TestPluginInet*>(info->info);
+			HINTERNET session = InternetOpen(L"NppTestPlugin", INTERNET_OPEN_TYPE_DIRECT, nullptr, nullptr, 0);
+			HINTERNET url = session ? InternetOpenUrl(session, get->url, nullptr, 0, INTERNET_FLAG_RELOAD, 0) : nullptr;
+			get->opened = url != nullptr;
+			if (url)
+			{
+				DWORD value = 0;
+				DWORD size = sizeof(value);
+				if (HttpQueryInfo(url, HTTP_QUERY_STATUS_CODE | HTTP_QUERY_FLAG_NUMBER, &value, &size, nullptr))
+					get->status = value;
+				size = sizeof(value);
+				if (HttpQueryInfo(url, HTTP_QUERY_CONTENT_LENGTH | HTTP_QUERY_FLAG_NUMBER, &value, &size, nullptr))
+					get->contentLength = value;
+				DWORD read = 0;
+				size_t at = 0;
+				while (at < sizeof(get->body) - 1 && InternetReadFile(url, get->body + at, static_cast<DWORD>(sizeof(get->body) - 1 - at), &read) && read)
+					at += read;
+				InternetCloseHandle(url);
+			}
+			if (session)
+				InternetCloseHandle(session);
+		}
 		return TRUE;
 	}
 	if (msg == WM_COMMAND)

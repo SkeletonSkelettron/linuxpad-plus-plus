@@ -21,6 +21,7 @@
 #include <QApplication>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDirIterator>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QPalette>
@@ -228,11 +229,11 @@ namespace Npp
 
 			const QString exeDir = QCoreApplication::applicationDirPath();
 			const QStringList candidates = {
-				exeDir + QStringLiteral("/../share/notepad++"),
-				exeDir + QStringLiteral("/share/notepad++"),
+				exeDir + QStringLiteral("/../share/linuxpad++"),
+				exeDir + QStringLiteral("/share/linuxpad++"),
 				exeDir,
-				QStringLiteral("/usr/local/share/notepad++"),
-				QStringLiteral("/usr/share/notepad++"),
+				QStringLiteral("/usr/local/share/linuxpad++"),
+				QStringLiteral("/usr/share/linuxpad++"),
 			};
 			for (const QString& c : candidates)
 			{
@@ -244,6 +245,61 @@ namespace Npp
 		return dir;
 	}
 
+	// LinuxPad++ was called Notepad++ (~/.config/notepad++): the first start copies those settings, once. The
+	// folder of Notepad++ is left as it is. The copy is made under another name and renamed at the end, so an
+	// interrupted copy is made again. The settings files that store the old path get the new one (not the backups,
+	// which are the documents of the user).
+	void migrateSettings(const QString& from, const QString& to)
+	{
+		if (QFileInfo::exists(to) || !QFileInfo(from).isDir())
+			return;
+		const QString tmp = to + QStringLiteral(".migrating");
+		QDir(tmp).removeRecursively();
+		bool ok = QDir().mkpath(tmp);
+		const QString fromPrefix = QDir(from).absolutePath() + QLatin1Char('/');
+		const QString toPrefix = QDir(to).absolutePath() + QLatin1Char('/');
+		QDirIterator it(from, QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot, QDirIterator::Subdirectories);
+		while (ok && it.hasNext())
+		{
+			const QString src = it.next();
+			const QFileInfo info = it.fileInfo();
+			const QString rel = QDir(from).relativeFilePath(src);
+			const QString dst = tmp + QLatin1Char('/') + rel;
+			if (info.isSymLink())
+				ok = QFile::link(info.symLinkTarget(), dst);
+			else if (info.isDir())
+				ok = QDir().mkpath(dst);
+			else
+			{
+				const QString suffix = info.suffix().toLower();
+				const bool text = !rel.startsWith(QStringLiteral("backup/")) && info.size() < 4 * 1024 * 1024
+					&& (suffix == QStringLiteral("xml") || suffix == QStringLiteral("ini") || suffix == QStringLiteral("json")
+						|| suffix == QStringLiteral("cfg") || suffix == QStringLiteral("txt") || suffix.isEmpty());
+				QFile in(src);
+				QByteArray data;
+				if (text && in.open(QIODevice::ReadOnly))
+				{
+					data = in.readAll();
+					in.close();
+					data.replace(fromPrefix.toUtf8(), toPrefix.toUtf8());
+					QFile out(dst);
+					ok = out.open(QIODevice::WriteOnly) && out.write(data) == data.size();
+					if (ok)
+						out.setPermissions(info.permissions());
+				}
+				else
+					ok = QFile::copy(src, dst);
+			}
+		}
+		if (ok)
+			ok = QDir().rename(tmp, to);
+		if (!ok)
+		{
+			qWarning("LinuxPad++: the settings of %s were not copied to %s", qPrintable(from), qPrintable(to));
+			QDir(tmp).removeRecursively();
+		}
+	}
+
 	QString localConfigDir()
 	{
 		static QString dir = []
@@ -251,7 +307,8 @@ namespace Npp
 			QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
 			if (base.isEmpty())
 				base = QDir::homePath() + QStringLiteral("/.config");
-			const QString d = base + QStringLiteral("/notepad++");
+			const QString d = base + QStringLiteral("/linuxpad++");
+			migrateSettings(base + QStringLiteral("/notepad++"), d);
 			QDir().mkpath(d);
 			return d;
 		}();
@@ -296,7 +353,7 @@ namespace Npp
 
 	QString appName()
 	{
-		return QStringLiteral("Notepad++");
+		return QStringLiteral("LinuxPad++");
 	}
 
 	bool isDarkDesktop()

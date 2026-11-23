@@ -19,8 +19,10 @@
 // environment, modules, registry in QSettings), the clipboard and system metrics.
 
 #include <atomic>
+#include <csignal>
 #include <chrono>
 #include <condition_variable>
+#include <map>
 #include <mutex>
 #include <shared_mutex>
 #include <thread>
@@ -29,12 +31,15 @@
 #include <QClipboard>
 #include <QCollator>
 #include <QDateTime>
+#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QLocale>
+#include <QStorageInfo>
 #include <QMimeData>
+#include <QUrl>
 #include <QRegularExpression>
 #include <QScreen>
 #include <QSettings>
@@ -58,6 +63,7 @@
 #include <unistd.h>
 
 #include "W32Internal.h"
+#include <objidl.h>
 
 namespace w32
 {
@@ -143,8 +149,23 @@ namespace w32
 		DIR* dir = nullptr;
 		std::string dirPath;
 		std::string pattern;
+		// named events: the handles of CreateEvent/OpenEvent of a name are the same object
+		std::wstring name;
+		int refs = 1;
 		explicit KObject(KType t) : type(t) {}
 	};
+
+	std::mutex& namedMutex()
+	{
+		static std::mutex m;
+		return m;
+	}
+
+	std::map<std::wstring, KObject*>& namedObjects()
+	{
+		static std::map<std::wstring, KObject*> objects;
+		return objects;
+	}
 
 	KObject* kobj(HANDLE h)
 	{
@@ -300,11 +321,21 @@ namespace w32
 			return true;
 		}
 
+		// the settings folder of the host: $XDG_CONFIG_HOME/<application name> (~/.config/linuxpad++)
+		QString hostConfigDir()
+		{
+			QString base = QStandardPaths::writableLocation(QStandardPaths::GenericConfigLocation);
+			if (base.isEmpty())
+				base = QDir::homePath() + QStringLiteral("/.config");
+			const QString app = QCoreApplication::applicationName();
+			return base + QLatin1Char('/') + (app.isEmpty() ? QStringLiteral("linuxpad++") : app);
+		}
+
 		QString iniPath(const wchar_t* file)
 		{
 			QString p = nativePath(file);
 			if (QFileInfo(p).isRelative())
-				p = QDir::homePath() + QStringLiteral("/.config/notepad++/") + p;
+				p = hostConfigDir() + QLatin1Char('/') + p;
 			return p;
 		}
 
@@ -343,7 +374,7 @@ namespace w32
 
 		QSettings& registry()
 		{
-			static QSettings s(QDir::homePath() + QStringLiteral("/.config/notepad++/plugins/config/registry.ini"), QSettings::IniFormat);
+			static QSettings s(hostConfigDir() + QStringLiteral("/plugins/config/registry.ini"), QSettings::IniFormat);
 			return s;
 		}
 
@@ -514,8 +545,8 @@ namespace
 			case CP_UTF8:
 			case CP_ACP:
 			case CP_THREAD_ACP:
+			case CP_OEMCP: // the code page of consoles: UTF-8 on Linux
 				return QString::fromUtf8(bytes);
-			case CP_OEMCP:
 			case 437:
 			{
 				QStringDecoder dec("IBM437");
@@ -540,6 +571,7 @@ namespace
 			case CP_UTF8:
 			case CP_ACP:
 			case CP_THREAD_ACP:
+			case CP_OEMCP:
 				return s.toUtf8();
 			case 28591:
 				return s.toLatin1();
@@ -605,7 +637,7 @@ UINT GetACP()
 
 UINT GetOEMCP()
 {
-	return 437;
+	return CP_UTF8; // the console code page of Linux terminals
 }
 
 BOOL IsValidCodePage(UINT codePage)
@@ -726,9 +758,33 @@ LANGID GetUserDefaultLangID() { return 0x0409; }
 int GetLocaleInfoW(LCID, DWORD type, LPWSTR data, int max)
 {
 	const QLocale l;
+	if (type & LOCALE_RETURN_NUMBER)
+	{
+		// the value as a DWORD in data (2 wchar_t)
+		DWORD n = 0;
+		switch (type & 0xFFFF)
+		{
+			case LOCALE_IDIGITS: n = 2; break;
+			case LOCALE_ILZERO: n = 1; break;
+			case LOCALE_INEGNUMBER: n = 1; break; // "-1.1"
+			default: break;
+		}
+		const int size = static_cast<int>(sizeof(DWORD) / sizeof(wchar_t));
+		if (!data || max == 0)
+			return size;
+		if (max < size)
+			return 0;
+		std::memcpy(data, &n, sizeof(DWORD));
+		return size;
+	}
 	QString v;
 	switch (type & 0xFFFF)
 	{
+		case LOCALE_SGROUPING: v = QStringLiteral("3;0"); break;
+		case LOCALE_IDIGITS: v = QStringLiteral("2"); break;
+		case LOCALE_ILZERO: v = QStringLiteral("1"); break;
+		case LOCALE_INEGNUMBER: v = QStringLiteral("1"); break;
+		case LOCALE_SNEGATIVESIGN: v = l.negativeSign(); break;
 		case LOCALE_SDECIMAL: v = l.decimalPoint(); break;
 		case LOCALE_STHOUSAND: v = l.groupSeparator(); break;
 		case LOCALE_SISO639LANGNAME: v = l.name().section(QLatin1Char('_'), 0, 0); break;
@@ -740,9 +796,149 @@ int GetLocaleInfoW(LCID, DWORD type, LPWSTR data, int max)
 	return copyOut(v, data, max) + 1;
 }
 
-int GetLocaleInfoEx(LPCWSTR, DWORD type, LPWSTR data, int max)
+BOOL IsValidLocaleName(LPCWSTR name)
 {
+	if (!name || !*name)
+		return FALSE;
+	const QString n = qs(name).replace(QLatin1Char('-'), QLatin1Char('_'));
+	const QLocale l(n);
+	if (l.language() == QLocale::C)
+		return FALSE;
+	// QLocale falls back to English for what it does not know
+	return (l.language() != QLocale::English || n.startsWith(QLatin1String("en"), Qt::CaseInsensitive)) ? TRUE : FALSE;
+}
+
+int GetLocaleInfoEx(LPCWSTR name, DWORD type, LPWSTR data, int max)
+{
+	const DWORD what = type & 0xFFFF;
+	if (name && *name && !(type & LOCALE_RETURN_NUMBER))
+	{
+		// the names of a locale ("en-US"): QLocale; an unknown locale is an error, like on Windows
+		const QString n = qs(name).replace(QLatin1Char('-'), QLatin1Char('_'));
+		const QLocale l(n);
+		if (l.language() == QLocale::C || (l.language() == QLocale::English && !n.startsWith(QLatin1String("en"), Qt::CaseInsensitive)))
+		{
+			SetLastError(ERROR_INVALID_PARAMETER);
+			return 0;
+		}
+		const bool hasTerritory = n.contains(QLatin1Char('_'));
+		QString v;
+		switch (what)
+		{
+			case LOCALE_SENGLISHDISPLAYNAME:
+			case LOCALE_SLOCALIZEDDISPLAYNAME:
+				v = QLocale::languageToString(l.language());
+				if (hasTerritory)
+					v += QStringLiteral(" (") + QLocale::territoryToString(l.territory()) + QLatin1Char(')');
+				break;
+			case LOCALE_SNATIVEDISPLAYNAME:
+				v = l.nativeLanguageName();
+				if (hasTerritory)
+					v += QStringLiteral(" (") + l.nativeTerritoryName() + QLatin1Char(')');
+				break;
+			case LOCALE_SENGLISHLANGUAGENAME: v = QLocale::languageToString(l.language()); break;
+			case LOCALE_SNATIVELANGUAGENAME: v = l.nativeLanguageName(); break;
+			case LOCALE_SENGLISHCOUNTRYNAME: v = QLocale::territoryToString(l.territory()); break;
+			case LOCALE_SNATIVECOUNTRYNAME: v = l.nativeTerritoryName(); break;
+			case LOCALE_SNAME: v = l.name().replace(QLatin1Char('_'), QLatin1Char('-')); break;
+			default: return GetLocaleInfoW(0, type, data, max);
+		}
+		if (!data || max == 0)
+			return static_cast<int>(ws(v).size()) + 1;
+		return copyOut(v, data, max) + 1;
+	}
 	return GetLocaleInfoW(0, type, data, max);
+}
+
+int GetNumberFormatW(LCID, DWORD, LPCWSTR value, const NUMBERFMTW* format, LPWSTR out, int max)
+{
+	// value: "-1234.5" (digits, '.', a leading '-'); out: with the separators of format or of the locale
+	if (!value)
+		return 0;
+	const QLocale l;
+	QString v = qs(value).trimmed();
+	const bool negative = v.startsWith(QLatin1Char('-'));
+	if (negative)
+		v.remove(0, 1);
+	QString intPart = v.section(QLatin1Char('.'), 0, 0);
+	QString frac = v.section(QLatin1Char('.'), 1);
+	for (const QChar ch : intPart + frac)
+	{
+		if (!ch.isDigit())
+		{
+			SetLastError(ERROR_INVALID_PARAMETER);
+			return 0;
+		}
+	}
+	const int digits = format ? static_cast<int>(format->NumDigits) : 2;
+	const bool leadingZero = format ? format->LeadingZero != 0 : true;
+	const int grouping = format ? static_cast<int>(format->Grouping) : 3;
+	const QString dec = format && format->lpDecimalSep ? qs(format->lpDecimalSep) : QString(l.decimalPoint());
+	const QString thou = format && format->lpThousandSep ? qs(format->lpThousandSep) : QString(l.groupSeparator());
+	// rounding of the fraction to digits
+	if (frac.size() > digits)
+	{
+		const bool up = frac.at(digits) >= QLatin1Char('5');
+		frac.truncate(digits);
+		if (up)
+		{
+			QString all = intPart + frac;
+			int i = static_cast<int>(all.size()) - 1;
+			for (; i >= 0; --i)
+			{
+				if (all[i] == QLatin1Char('9'))
+					all[i] = QLatin1Char('0');
+				else
+				{
+					all[i] = QChar(all[i].unicode() + 1);
+					break;
+				}
+			}
+			if (i < 0)
+				all.prepend(QLatin1Char('1'));
+			intPart = all.left(all.size() - frac.size());
+			frac = all.right(frac.size());
+		}
+	}
+	while (frac.size() < digits)
+		frac += QLatin1Char('0');
+	intPart.remove(QRegularExpression(QStringLiteral("^0+(?=\\d)")));
+	if (intPart.isEmpty() || (intPart == QLatin1String("0") && !leadingZero && digits > 0))
+		intPart = leadingZero || digits == 0 ? QStringLiteral("0") : QString();
+	if (grouping > 0)
+	{
+		const int g = grouping >= 10 ? grouping / 10 : grouping; // 32: "3;2" (first group 3)
+		for (int i = static_cast<int>(intPart.size()) - g; i > 0; i -= g)
+			intPart.insert(i, thou);
+	}
+	QString r = intPart;
+	if (digits > 0)
+		r += dec + frac;
+	if (negative)
+	{
+		switch (format ? format->NegativeOrder : 1)
+		{
+			case 0: r = QLatin1Char('(') + r + QLatin1Char(')'); break;
+			case 2: r = QStringLiteral("- ") + r; break;
+			case 3: r += QLatin1Char('-'); break;
+			case 4: r += QStringLiteral(" -"); break;
+			default: r.prepend(QLatin1Char('-')); break;
+		}
+	}
+	const int needed = static_cast<int>(ws(r).size()) + 1;
+	if (!out || max == 0)
+		return needed;
+	if (max < needed)
+	{
+		SetLastError(ERROR_INSUFFICIENT_BUFFER);
+		return 0;
+	}
+	return copyOut(r, out, max) + 1;
+}
+
+int GetNumberFormatEx(LPCWSTR, DWORD flags, LPCWSTR value, const NUMBERFMTW* format, LPWSTR out, int max)
+{
+	return GetNumberFormatW(0, flags, value, format, out, max);
 }
 
 namespace
@@ -911,6 +1107,13 @@ BOOL CloseHandle(HANDLE h)
 	KObject* k = kobj(h);
 	if (!k)
 		return h == nullptr ? FALSE : TRUE;
+	if (!k->name.empty())
+	{
+		std::lock_guard<std::mutex> lock(namedMutex());
+		if (--k->refs > 0)
+			return TRUE;
+		namedObjects().erase(k->name);
+	}
 	switch (k->type)
 	{
 		case KType::File:
@@ -945,6 +1148,45 @@ DWORD GetFileSize(HANDLE h, LPDWORD high)
 	if (high)
 		*high = static_cast<DWORD>(static_cast<unsigned long long>(st.st_size) >> 32);
 	return static_cast<DWORD>(st.st_size & 0xFFFFFFFF);
+}
+
+BOOL GetFileInformationByHandle(HANDLE h, LPBY_HANDLE_FILE_INFORMATION info)
+{
+	KObject* k = kobj(h);
+	struct stat st{};
+	if (!k || k->fd < 0 || !info || ::fstat(k->fd, &st) != 0)
+	{
+		SetLastError(ERROR_INVALID_HANDLE);
+		return FALSE;
+	}
+	*info = BY_HANDLE_FILE_INFORMATION{};
+	info->dwFileAttributes = S_ISDIR(st.st_mode) ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+	auto fileTime = [](const timespec& t)
+	{
+		// 100 ns intervals since 1601
+		const unsigned long long v = (static_cast<unsigned long long>(t.tv_sec) + 11644473600ULL) * 10000000ULL + static_cast<unsigned long long>(t.tv_nsec) / 100;
+		return FILETIME{static_cast<DWORD>(v & 0xFFFFFFFF), static_cast<DWORD>(v >> 32)};
+	};
+	info->ftCreationTime = fileTime(st.st_ctim);
+	info->ftLastAccessTime = fileTime(st.st_atim);
+	info->ftLastWriteTime = fileTime(st.st_mtim);
+	info->dwVolumeSerialNumber = static_cast<DWORD>(st.st_dev);
+	info->nFileSizeHigh = static_cast<DWORD>(static_cast<unsigned long long>(st.st_size) >> 32);
+	info->nFileSizeLow = static_cast<DWORD>(st.st_size & 0xFFFFFFFF);
+	info->nNumberOfLinks = static_cast<DWORD>(st.st_nlink);
+	info->nFileIndexHigh = static_cast<DWORD>(static_cast<unsigned long long>(st.st_ino) >> 32);
+	info->nFileIndexLow = static_cast<DWORD>(st.st_ino & 0xFFFFFFFF);
+	return TRUE;
+}
+
+wchar_t* _wtmpnam(wchar_t* buffer)
+{
+	static thread_local wchar_t name[MAX_PATH];
+	wchar_t* out = buffer ? buffer : name;
+	static std::atomic<unsigned> serial{0};
+	const QString path = QDir::tempPath() + QStringLiteral("/npp-%1-%2.tmp").arg(QCoreApplication::applicationPid()).arg(++serial);
+	copyOut(path, out, MAX_PATH);
+	return out;
 }
 
 BOOL GetFileSizeEx(HANDLE h, PLARGE_INTEGER size)
@@ -1037,6 +1279,152 @@ BOOL GetFileTime(HANDLE h, LPFILETIME created, LPFILETIME accessed, LPFILETIME w
 	if (written)
 		*written = toFileTime(st.st_mtim.tv_sec, st.st_mtim.tv_nsec);
 	return TRUE;
+}
+
+BOOL SetFileTime(HANDLE h, const FILETIME* created, const FILETIME* accessed, const FILETIME* written)
+{
+	(void)created; // Linux files have no creation time to set
+	KObject* k = kobj(h);
+	if (!k || k->fd < 0)
+		return FALSE;
+	auto spec = [](const FILETIME* ft)
+	{
+		timespec ts{};
+		if (!ft || (ft->dwLowDateTime == 0 && ft->dwHighDateTime == 0))
+		{
+			ts.tv_nsec = UTIME_OMIT;
+			return ts;
+		}
+		const unsigned long long v = (static_cast<unsigned long long>(ft->dwHighDateTime) << 32) | ft->dwLowDateTime;
+		ts.tv_sec = static_cast<time_t>(v / 10000000ULL - 11644473600ULL);
+		ts.tv_nsec = static_cast<long>((v % 10000000ULL) * 100);
+		return ts;
+	};
+	const timespec times[2] = {spec(accessed), spec(written)};
+	if (::futimens(k->fd, times) != 0)
+	{
+		setErrno();
+		return FALSE;
+	}
+	return TRUE;
+}
+
+DWORD SearchPathW(LPCWSTR path, LPCWSTR fileName, LPCWSTR extension, DWORD bufferLength, LPWSTR buffer, LPWSTR* filePart)
+{
+	if (!fileName || !*fileName)
+		return 0;
+	QString name = nativePath(fileName);
+	if (extension && *extension && QFileInfo(name).suffix().isEmpty())
+		name += qs(extension);
+	QStringList dirs;
+	if (QFileInfo(name).isAbsolute())
+		dirs << QString();
+	else if (path && *path)
+		dirs = nativePath(path).split(QRegularExpression(QStringLiteral("[;:]")), Qt::SkipEmptyParts);
+	else
+		dirs = QString::fromLocal8Bit(qgetenv("PATH")).split(QLatin1Char(':'), Qt::SkipEmptyParts);
+	for (const QString& dir : dirs)
+	{
+		const QString candidate = dir.isEmpty() ? name : QDir(dir).filePath(name);
+		const QFileInfo fi(candidate);
+		if (!fi.exists() || fi.isDir())
+			continue;
+		const QString full = fi.absoluteFilePath();
+		const DWORD needed = static_cast<DWORD>(full.size()) + 1;
+		if (!buffer || bufferLength < needed)
+			return needed;
+		copyOut(full, buffer, static_cast<int>(bufferLength));
+		if (filePart)
+			*filePart = buffer + (full.size() - fi.fileName().size());
+		return needed - 1;
+	}
+	g_lastError = ERROR_FILE_NOT_FOUND;
+	return 0;
+}
+
+// no pseudo consoles and no job objects here: the callers use their other ways (pipes, the process)
+BOOL InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST, DWORD, DWORD, PSIZE_T size)
+{
+	if (size)
+		*size = 0;
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return FALSE;
+}
+
+BOOL UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST, DWORD, DWORD_PTR, PVOID, SIZE_T, PVOID, PSIZE_T)
+{
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return FALSE;
+}
+
+void DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST)
+{
+}
+
+HANDLE CreateJobObjectW(LPSECURITY_ATTRIBUTES, LPCWSTR)
+{
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return nullptr;
+}
+
+BOOL SetInformationJobObject(HANDLE, JOBOBJECTINFOCLASS, LPVOID, DWORD)
+{
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return FALSE;
+}
+
+BOOL AssignProcessToJobObject(HANDLE, HANDLE)
+{
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return FALSE;
+}
+
+BOOL IsProcessInJob(HANDLE, HANDLE, PBOOL result)
+{
+	if (result)
+		*result = FALSE;
+	return TRUE;
+}
+
+BOOL TerminateJobObject(HANDLE, UINT)
+{
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return FALSE;
+}
+
+BOOL SetConsoleCtrlHandler(PHANDLER_ROUTINE, BOOL)
+{
+	return TRUE;
+}
+
+BOOL GenerateConsoleCtrlEvent(DWORD ctrlEvent, DWORD processGroupId)
+{
+	// Ctrl+C / Ctrl+Break of a console: SIGINT to the process group of the process (its own group
+	// with CREATE_NEW_PROCESS_GROUP), else to the process; 0 (all of this console) signals nothing
+	if (processGroupId == 0)
+		return TRUE;
+	const int sig = (ctrlEvent == CTRL_C_EVENT || ctrlEvent == CTRL_BREAK_EVENT) ? SIGINT : SIGTERM;
+	const pid_t pid = static_cast<pid_t>(processGroupId);
+	if (::kill(-pid, sig) == 0 || ::kill(pid, sig) == 0)
+		return TRUE;
+	setErrno();
+	return FALSE;
+}
+
+BOOL AllocConsole()
+{
+	return FALSE;
+}
+
+BOOL FreeConsole()
+{
+	return TRUE;
+}
+
+BOOL AttachConsole(DWORD)
+{
+	g_lastError = ERROR_NOT_SUPPORTED;
+	return FALSE;
 }
 
 DWORD GetFileType(HANDLE h)
@@ -1377,6 +1765,28 @@ BOOL GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER freeToCaller, PULARGE_INTE
 UINT GetDriveTypeW(LPCWSTR root)
 {
 	return (root && QFileInfo(nativePath(root)).isDir()) ? DRIVE_FIXED : DRIVE_NO_ROOT_DIR;
+}
+
+BOOL GetVolumeInformationW(LPCWSTR root, LPWSTR volumeName, DWORD volumeNameSize, LPDWORD serial, LPDWORD maxComponent,
+	LPDWORD fsFlags, LPWSTR fsName, DWORD fsNameSize)
+{
+	const QStorageInfo info(root ? nativePath(root) : QStringLiteral("/"));
+	if (!info.isValid())
+	{
+		SetLastError(ERROR_PATH_NOT_FOUND);
+		return FALSE;
+	}
+	if (volumeName && volumeNameSize)
+		copyOut(info.name(), volumeName, static_cast<int>(volumeNameSize));
+	if (serial)
+		*serial = static_cast<DWORD>(qHash(info.device()));
+	if (maxComponent)
+		*maxComponent = 255;
+	if (fsFlags)
+		*fsFlags = 0x00000003; // FILE_CASE_SENSITIVE_SEARCH | FILE_CASE_PRESERVED_NAMES
+	if (fsName && fsNameSize)
+		copyOut(QString::fromUtf8(info.fileSystemType()), fsName, static_cast<int>(fsNameSize));
+	return TRUE;
 }
 
 DWORD GetLogicalDrives()
@@ -2166,12 +2576,42 @@ DWORD MsgWaitForMultipleObjects(DWORD count, const HANDLE* handles, BOOL all, DW
 	return (r == WAIT_TIMEOUT && ms != 0) ? WAIT_OBJECT_0 + count : r;
 }
 
-HANDLE CreateEventW(LPSECURITY_ATTRIBUTES, BOOL manualReset, BOOL initialState, LPCWSTR)
+HANDLE CreateEventW(LPSECURITY_ATTRIBUTES, BOOL manualReset, BOOL initialState, LPCWSTR name)
 {
+	std::lock_guard<std::mutex> lock(namedMutex());
+	if (name && *name)
+	{
+		auto it = namedObjects().find(name);
+		if (it != namedObjects().end())
+		{
+			++it->second->refs;
+			g_lastError = ERROR_ALREADY_EXISTS;
+			return it->second;
+		}
+	}
 	auto* k = new KObject(KType::Event);
 	k->manualReset = manualReset != FALSE;
 	k->signaled = initialState != FALSE;
+	if (name && *name)
+	{
+		k->name = name;
+		namedObjects()[k->name] = k;
+	}
+	g_lastError = ERROR_SUCCESS;
 	return k;
+}
+
+HANDLE OpenEventW(DWORD, BOOL, LPCWSTR name)
+{
+	std::lock_guard<std::mutex> lock(namedMutex());
+	auto it = name ? namedObjects().find(name) : namedObjects().end();
+	if (it == namedObjects().end() || it->second->type != KType::Event)
+	{
+		g_lastError = ERROR_FILE_NOT_FOUND;
+		return nullptr;
+	}
+	++it->second->refs;
+	return it->second;
 }
 
 BOOL SetEvent(HANDLE h)
@@ -2325,7 +2765,7 @@ void* InterlockedCompareExchangePointer(void* volatile* v, void* exchange, void*
 }
 
 // ---- processes and pipes --------------------------------------------------------------------
-BOOL CreateProcessW(LPCWSTR app, LPWSTR cmdLine, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD, LPVOID,
+BOOL CreateProcessW(LPCWSTR app, LPWSTR cmdLine, LPSECURITY_ATTRIBUTES, LPSECURITY_ATTRIBUTES, BOOL, DWORD creationFlags, LPVOID,
 	LPCWSTR dir, LPSTARTUPINFOW si, LPPROCESS_INFORMATION pi)
 {
 	// the command line runs in the shell (Windows programs of plugins: the user sets Linux ones)
@@ -2360,6 +2800,9 @@ BOOL CreateProcessW(LPCWSTR app, LPWSTR cmdLine, LPSECURITY_ATTRIBUTES, LPSECURI
 			dup2(err, 2);
 		if (!workDir.isEmpty() && chdir(workDir.constData()) != 0)
 			_exit(127);
+		// CREATE_NEW_PROCESS_GROUP: GenerateConsoleCtrlEvent reaches the shell and what it runs
+		if (creationFlags & CREATE_NEW_PROCESS_GROUP)
+			setpgid(0, 0);
 		execl("/bin/sh", "sh", "-c", cmd.constData(), static_cast<char*>(nullptr));
 		_exit(127);
 	}
@@ -2631,7 +3074,79 @@ BOOL GetVersionExW(OSVERSIONINFOW* vi)
 	vi->dwBuildNumber = 19045;
 	vi->dwPlatformId = 2;
 	vi->szCSDVersion[0] = 0;
+	if (vi->dwOSVersionInfoSize >= sizeof(OSVERSIONINFOEXW))
+	{
+		auto* ex = reinterpret_cast<OSVERSIONINFOEXW*>(vi);
+		ex->wServicePackMajor = 0;
+		ex->wServicePackMinor = 0;
+		ex->wSuiteMask = 0;
+		ex->wProductType = VER_NT_WORKSTATION;
+		ex->wReserved = 0;
+	}
 	return TRUE;
+}
+
+BOOL GetProductInfo(DWORD, DWORD, DWORD, DWORD, PDWORD productType)
+{
+	if (!productType)
+		return FALSE;
+	*productType = PRODUCT_PROFESSIONAL;
+	return TRUE;
+}
+
+BOOL IsTextUnicode(const void* buffer, int size, LPINT result)
+{
+	const auto* b = static_cast<const unsigned char*>(buffer);
+	const int asked = result ? *result : 0xFFFF;
+	int found = 0;
+	if (!b || size < 2)
+	{
+		if (result)
+			*result = 0;
+		return FALSE;
+	}
+	if (size % 2)
+		found |= IS_TEXT_UNICODE_ODD_LENGTH;
+	if (b[0] == 0xFF && b[1] == 0xFE)
+		found |= IS_TEXT_UNICODE_SIGNATURE;
+	if (b[0] == 0xFE && b[1] == 0xFF)
+		found |= IS_TEXT_UNICODE_REVERSE_SIGNATURE;
+	// statistics: ASCII text in UTF-16 LE has nuls in the odd bytes, not in the even ones
+	int evenNul = 0, oddNul = 0, controls = 0;
+	const int pairs = size / 2;
+	for (int i = 0; i < pairs; ++i)
+	{
+		const unsigned lo = b[2 * i], hi = b[2 * i + 1];
+		if (!lo)
+			++evenNul;
+		if (!hi)
+			++oddNul;
+		const unsigned ch = lo | (hi << 8);
+		if (ch == '\r' || ch == '\n' || ch == '\t' || ch == ' ')
+			++controls;
+		if (ch == 0xFFFF || ch == 0xFFFE)
+			found |= IS_TEXT_UNICODE_ILLEGAL_CHARS;
+	}
+	if (oddNul > pairs / 2 && evenNul < pairs / 8)
+		found |= IS_TEXT_UNICODE_STATISTICS | IS_TEXT_UNICODE_ASCII16;
+	if (evenNul > pairs / 2 && oddNul < pairs / 8)
+		found |= IS_TEXT_UNICODE_REVERSE_STATISTICS | IS_TEXT_UNICODE_REVERSE_ASCII16;
+	if (controls)
+		found |= IS_TEXT_UNICODE_CONTROLS;
+	// single bytes text: a nul byte is not text
+	for (int i = 0; i < size; ++i)
+	{
+		if (!b[i])
+		{
+			found |= IS_TEXT_UNICODE_NULL_BYTES;
+			break;
+		}
+	}
+	if (result)
+		*result = found & asked;
+	const bool unicode = (found & (IS_TEXT_UNICODE_SIGNATURE | IS_TEXT_UNICODE_STATISTICS | IS_TEXT_UNICODE_ASCII16))
+		&& !(found & (IS_TEXT_UNICODE_ODD_LENGTH | IS_TEXT_UNICODE_ILLEGAL_CHARS | IS_TEXT_UNICODE_REVERSE_SIGNATURE));
+	return unicode ? TRUE : FALSE;
 }
 
 DWORD GetVersion()
@@ -2910,13 +3425,48 @@ LONG RegGetValueW(HKEY key, LPCWSTR subKey, LPCWSTR value, DWORD, LPDWORD type, 
 HRESULT CoInitialize(LPVOID) { return S_OK; }
 HRESULT CoInitializeEx(LPVOID, DWORD) { return S_OK; }
 void CoUninitialize() {}
-HRESULT CoCreateInstance(REFCLSID, void*, DWORD, REFIID, LPVOID* out)
+HRESULT CoCreateInstance(REFCLSID clsid, void*, DWORD, REFIID iid, LPVOID* out)
 {
-	if (out)
-		*out = nullptr;
-	return E_NOINTERFACE;
+	if (!out)
+		return E_POINTER;
+	*out = nullptr;
+	// the file dialogs; other classes are not registered
+	return w32::createShellObject(clsid, iid, out);
 }
 void CoTaskMemFree(LPVOID p) { std::free(p); }
+
+namespace
+{
+	// IMalloc of CoGetMalloc / SHGetMalloc: CoTaskMemAlloc and CoTaskMemFree
+	class TaskMalloc : public IMalloc
+	{
+	public:
+		HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** out) override
+		{
+			if (!out)
+				return E_POINTER;
+			*out = (iid == IID_IUnknown || iid == IID_IMalloc) ? static_cast<IMalloc*>(this) : nullptr;
+			return *out ? S_OK : E_NOINTERFACE;
+		}
+		ULONG STDMETHODCALLTYPE AddRef() override { return 2; }
+		ULONG STDMETHODCALLTYPE Release() override { return 1; }
+		void* STDMETHODCALLTYPE Alloc(SIZE_T cb) override { return CoTaskMemAlloc(cb); }
+		void* STDMETHODCALLTYPE Realloc(void* pv, SIZE_T cb) override { return std::realloc(pv, cb); }
+		void STDMETHODCALLTYPE Free(void* pv) override { CoTaskMemFree(pv); }
+		SIZE_T STDMETHODCALLTYPE GetSize(void*) override { return static_cast<SIZE_T>(-1); }
+		int STDMETHODCALLTYPE DidAlloc(void*) override { return -1; }
+		void STDMETHODCALLTYPE HeapMinimize() override {}
+	};
+}
+
+HRESULT CoGetMalloc(DWORD, LPMALLOC* malloc)
+{
+	static TaskMalloc m;
+	if (!malloc)
+		return E_INVALIDARG;
+	*malloc = &m;
+	return S_OK;
+}
 LPVOID CoTaskMemAlloc(SIZE_T size) { return std::malloc(size); }
 HRESULT CoCreateGuid(GUID* guid)
 {
@@ -2960,6 +3510,12 @@ namespace
 	std::map<UINT, QString>& customFormats()
 	{
 		static std::map<UINT, QString> f;
+		return f;
+	}
+
+	UINT preferredDropEffect()
+	{
+		static const UINT f = RegisterClipboardFormatW(L"Preferred DropEffect");
 		return f;
 	}
 
@@ -3013,7 +3569,19 @@ HANDLE SetClipboardData(UINT format, HANDLE data)
 		c.pending = new QMimeData;
 	if (!data)
 		return nullptr;
-	if (format == CF_UNICODETEXT)
+	if (format == CF_HDROP)
+	{
+		// files: URLs (and cut or copy, CFSTR_PREFERREDDROPEFFECT, when it comes)
+		const DWORD effect = filesEffectOf(c.pending);
+		setFilesMime(c.pending, dropFilesList(data), c.pending->hasFormat(QStringLiteral("x-special/gnome-copied-files")) ? effect : 0);
+	}
+	else if (format == preferredDropEffect())
+	{
+		DWORD effect = 0;
+		std::memcpy(&effect, data, std::min<size_t>(sizeof(effect), GlobalSize(data)));
+		setFilesEffect(c.pending, effect);
+	}
+	else if (format == CF_UNICODETEXT)
 		c.pending->setText(qs(static_cast<const wchar_t*>(data)));
 	else if (format == CF_TEXT || format == CF_OEMTEXT)
 		c.pending->setText(qsA(static_cast<const char*>(data)));
@@ -3036,7 +3604,25 @@ HANDLE GetClipboardData(UINT format)
 	if (!md)
 		return nullptr;
 	HGLOBAL h = nullptr;
-	if (format == CF_UNICODETEXT)
+	if (format == CF_HDROP)
+	{
+		QStringList files;
+		for (const QUrl& u : md->urls())
+		{
+			if (u.isLocalFile())
+				files << u.toLocalFile();
+		}
+		if (files.isEmpty())
+			return nullptr;
+		h = makeDropFiles(files, POINT{});
+	}
+	else if (format == preferredDropEffect() && md->hasUrls())
+	{
+		const DWORD effect = filesEffectOf(md);
+		h = GlobalAlloc(GMEM_ZEROINIT, sizeof(DWORD));
+		std::memcpy(h, &effect, sizeof(DWORD));
+	}
+	else if (format == CF_UNICODETEXT)
 	{
 		if (!md->hasText())
 			return nullptr;
@@ -3072,6 +3658,15 @@ BOOL IsClipboardFormatAvailable(UINT format)
 		return FALSE;
 	if (format == CF_TEXT || format == CF_UNICODETEXT || format == CF_OEMTEXT)
 		return md->hasText() ? TRUE : FALSE;
+	if (format == CF_HDROP || format == preferredDropEffect())
+	{
+		for (const QUrl& u : md->urls())
+		{
+			if (u.isLocalFile())
+				return TRUE;
+		}
+		return format == CF_HDROP ? FALSE : (md->hasFormat(mimeOf(format)) ? TRUE : FALSE);
+	}
 	return md->hasFormat(mimeOf(format)) ? TRUE : FALSE;
 }
 
@@ -3205,6 +3800,27 @@ HMONITOR MonitorFromRect(LPCRECT rc, DWORD)
 	if (!rc)
 		return monitorOf(nullptr);
 	return monitorOf(QGuiApplication::screenAt(QPoint((rc->left + rc->right) / 2, (rc->top + rc->bottom) / 2)));
+}
+
+BOOL EnumDisplayMonitors(HDC, LPCRECT clip, MONITORENUMPROC proc, LPARAM data)
+{
+	if (!proc)
+		return FALSE;
+	for (QScreen* s : QGuiApplication::screens())
+	{
+		const QRect g = s->geometry();
+		RECT rc{g.left(), g.top(), g.left() + g.width(), g.top() + g.height()};
+		if (clip)
+		{
+			RECT part{};
+			if (!IntersectRect(&part, &rc, clip))
+				continue;
+			rc = part;
+		}
+		if (!proc(static_cast<HMONITOR>(s), nullptr, &rc, data))
+			break;
+	}
+	return TRUE;
 }
 
 HMONITOR MonitorFromPoint(POINT pt, DWORD)

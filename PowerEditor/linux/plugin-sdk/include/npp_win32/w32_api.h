@@ -29,7 +29,16 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <cwchar>
 #include <string>
+#include <type_traits>
+
+// min and max of <windows.h> (macros there; functions here, not to break the
+// standard library and Qt). NOMINMAX takes them out, as on Windows.
+#ifndef NOMINMAX
+template <typename A, typename B> constexpr auto min(A a, B b) -> std::common_type_t<A, B> { return b < a ? b : a; }
+template <typename A, typename B> constexpr auto max(A a, B b) -> std::common_type_t<A, B> { return a < b ? b : a; }
+#endif
 
 // ---- helpers -------------------------------------------------------------------------
 #define LOWORD(l) ((WORD)(((DWORD_PTR)(l)) & 0xffff))
@@ -113,10 +122,16 @@
 #define HKEY_USERS ((HKEY)(ULONG_PTR)0x80000003)
 
 // ---- messages to windows ---------------------------------------------------------------
+// like Windows, a message sent from another thread is handled on the thread of the windows (the
+// GUI thread), and the sender waits for the result
+bool npp_isGuiThread();
+LRESULT npp_sendFromThread(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 inline LRESULT SendMessageW(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
 	if (!hWnd || hWnd->magic != NPP_HANDLE_MAGIC || !hWnd->send)
 		return 0;
+	if (!npp_isGuiThread())
+		return npp_sendFromThread(hWnd, msg, wParam, lParam);
 	return hWnd->send(hWnd, msg, wParam, lParam);
 }
 LRESULT SendMessageA(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
@@ -176,6 +191,7 @@ BOOL IsWindowEnabled(HWND hWnd);
 BOOL IsIconic(HWND hWnd);
 BOOL IsZoomed(HWND hWnd);
 BOOL IsChild(HWND parent, HWND hWnd);
+inline BOOL IsWindowUnicode(HWND) { return TRUE; }
 BOOL ShowWindow(HWND hWnd, int cmd);
 BOOL ShowWindowAsync(HWND hWnd, int cmd);
 BOOL EnableWindow(HWND hWnd, BOOL enable);
@@ -200,6 +216,9 @@ HWND GetParent(HWND hWnd);
 HWND SetParent(HWND child, HWND parent);
 HWND GetAncestor(HWND hWnd, UINT flags);
 HWND GetWindow(HWND hWnd, UINT cmd);
+#define GetNextWindow(hWnd, cmd) GetWindow((hWnd), (cmd))
+UINT GetWindowModuleFileNameW(HWND hWnd, LPWSTR path, UINT max);
+#define GetWindowModuleFileName GetWindowModuleFileNameW
 HWND GetTopWindow(HWND hWnd);
 HWND GetDesktopWindow();
 HWND GetForegroundWindow();
@@ -264,8 +283,93 @@ LRESULT DefDlgProcW(HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam);
 #define DefWindowProcA DefWindowProcW
 #define DefDlgProc DefDlgProcW
 BOOL FlashWindow(HWND hWnd, BOOL invert);
+typedef struct {
+	UINT cbSize;
+	HWND hwnd;
+	DWORD dwFlags;
+	UINT uCount;
+	DWORD dwTimeout;
+} FLASHWINFO, *PFLASHWINFO;
+#define FLASHW_STOP 0
+#define FLASHW_CAPTION 0x00000001
+#define FLASHW_TRAY 0x00000002
+#define FLASHW_ALL (FLASHW_CAPTION | FLASHW_TRAY)
+#define FLASHW_TIMER 0x00000004
+#define FLASHW_TIMERNOFG 0x0000000C
+BOOL FlashWindowEx(PFLASHWINFO info); // QApplication::alert (FLASHW_STOP: nothing)
+// SendInput: the mouse buttons (MOUSEEVENTF_*DOWN/UP) at the mouse position, to the widget that has the mouse
+// (grabbed) or the one under it; other input is not sent
+typedef struct {
+	LONG dx;
+	LONG dy;
+	DWORD mouseData;
+	DWORD dwFlags;
+	DWORD time;
+	ULONG_PTR dwExtraInfo;
+} MOUSEINPUT;
+typedef struct {
+	WORD wVk;
+	WORD wScan;
+	DWORD dwFlags;
+	DWORD time;
+	ULONG_PTR dwExtraInfo;
+} KEYBDINPUT;
+typedef struct {
+	DWORD uMsg;
+	WORD wParamL;
+	WORD wParamH;
+} HARDWAREINPUT;
+typedef struct {
+	DWORD type;
+	union {
+		MOUSEINPUT mi;
+		KEYBDINPUT ki;
+		HARDWAREINPUT hi;
+	};
+} INPUT, *LPINPUT;
+#define INPUT_MOUSE 0
+#define INPUT_KEYBOARD 1
+#define INPUT_HARDWARE 2
+#define MOUSEEVENTF_MOVE 0x0001
+#define MOUSEEVENTF_LEFTDOWN 0x0002
+#define MOUSEEVENTF_LEFTUP 0x0004
+#define MOUSEEVENTF_RIGHTDOWN 0x0008
+#define MOUSEEVENTF_RIGHTUP 0x0010
+#define MOUSEEVENTF_MIDDLEDOWN 0x0020
+#define MOUSEEVENTF_MIDDLEUP 0x0040
+#define MOUSEEVENTF_WHEEL 0x0800
+#define MOUSEEVENTF_ABSOLUTE 0x8000
+#define KEYEVENTF_EXTENDEDKEY 0x0001
+#define KEYEVENTF_KEYUP 0x0002
+#define KEYEVENTF_UNICODE 0x0004
+#define KEYEVENTF_SCANCODE 0x0008
+UINT SendInput(UINT count, LPINPUT inputs, int size); // the number of inputs sent
 UINT GetDpiForWindow(HWND hWnd);
 UINT GetDpiForSystem();
+// DPI awareness: Qt scales the windows, the context is only remembered
+#define USER_DEFAULT_SCREEN_DPI 96
+typedef struct DPI_AWARENESS_CONTEXT__* DPI_AWARENESS_CONTEXT;
+#define DPI_AWARENESS_CONTEXT_UNAWARE ((DPI_AWARENESS_CONTEXT)-1)
+#define DPI_AWARENESS_CONTEXT_SYSTEM_AWARE ((DPI_AWARENESS_CONTEXT)-2)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE ((DPI_AWARENESS_CONTEXT)-3)
+#define DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 ((DPI_AWARENESS_CONTEXT)-4)
+#define DPI_AWARENESS_CONTEXT_UNAWARE_GDISCALED ((DPI_AWARENESS_CONTEXT)-5)
+inline DPI_AWARENESS_CONTEXT& npp_threadDpiContext()
+{
+	static thread_local DPI_AWARENESS_CONTEXT context = DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2;
+	return context;
+}
+inline DPI_AWARENESS_CONTEXT SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT context)
+{
+	const DPI_AWARENESS_CONTEXT old = npp_threadDpiContext();
+	npp_threadDpiContext() = context;
+	return old;
+}
+inline DPI_AWARENESS_CONTEXT GetThreadDpiAwarenessContext() { return npp_threadDpiContext(); }
+inline BOOL AreDpiAwarenessContextsEqual(DPI_AWARENESS_CONTEXT a, DPI_AWARENESS_CONTEXT b) { return a == b; }
+int GetSystemMetrics(int index);
+int MulDiv(int number, int numerator, int denominator);
+inline int GetSystemMetricsForDpi(int index, UINT dpi) { return MulDiv(GetSystemMetrics(index), static_cast<int>(dpi), USER_DEFAULT_SCREEN_DPI); }
 BOOL AdjustWindowRectEx(LPRECT rect, DWORD style, BOOL menu, DWORD exStyle);
 BOOL AnimateWindow(HWND hWnd, DWORD time, DWORD flags);
 BOOL SetLayeredWindowAttributes(HWND hWnd, COLORREF key, BYTE alpha, DWORD flags);
@@ -276,6 +380,7 @@ BOOL DrawMenuBar(HWND hWnd);
 BOOL ShowScrollBar(HWND hWnd, int bar, BOOL show);
 int SetScrollInfo(HWND hWnd, int bar, LPCSCROLLINFO si, BOOL redraw);
 BOOL GetScrollInfo(HWND hWnd, int bar, LPSCROLLINFO si);
+BOOL GetScrollBarInfo(HWND hWnd, LONG idObject, PSCROLLBARINFO info);
 int SetScrollPos(HWND hWnd, int bar, int pos, BOOL redraw);
 int GetScrollPos(HWND hWnd, int bar);
 BOOL SetScrollRange(HWND hWnd, int bar, int min, int max, BOOL redraw);
@@ -284,6 +389,7 @@ BOOL DragDetect(HWND hWnd, POINT pt);
 void DragAcceptFiles(HWND hWnd, BOOL accept);
 UINT DragQueryFileW(HDROP drop, UINT index, LPWSTR file, UINT max);
 void DragFinish(HDROP drop);
+BOOL DragQueryPoint(HDROP drop, POINT* pt);
 #define DragQueryFile DragQueryFileW
 
 // ---- dialogs -------------------------------------------------------------------------
@@ -330,6 +436,23 @@ HMENU CreateMenu();
 HMENU CreatePopupMenu();
 BOOL DestroyMenu(HMENU hMenu);
 HMENU GetMenu(HWND hWnd);
+struct MENUBARINFO
+{
+	DWORD cbSize;
+	RECT rcBar;
+	HMENU hMenu;
+	HWND hwndMenu;
+	BOOL fBarFocused : 1;
+	BOOL fFocused : 1;
+	BOOL fUnused : 30;
+};
+typedef MENUBARINFO* PMENUBARINFO;
+typedef MENUBARINFO* LPMENUBARINFO;
+#define OBJID_WINDOW ((LONG)0x00000000)
+#define OBJID_SYSMENU ((LONG)0xFFFFFFFF)
+#define OBJID_MENU ((LONG)0xFFFFFFFD)
+// the menu bar of the window (idItem 0) or one of its menus (1...): screen rectangle and menu
+BOOL GetMenuBarInfo(HWND hWnd, LONG idObject, LONG idItem, PMENUBARINFO info);
 BOOL SetMenu(HWND hWnd, HMENU hMenu);
 HMENU GetSubMenu(HMENU hMenu, int pos);
 HMENU GetSystemMenu(HWND hWnd, BOOL revert);
@@ -358,6 +481,13 @@ BOOL CheckMenuRadioItem(HMENU hMenu, UINT first, UINT last, UINT check, UINT fla
 BOOL SetMenuDefaultItem(HMENU hMenu, UINT item, UINT byPos);
 BOOL TrackPopupMenu(HMENU hMenu, UINT flags, int x, int y, int reserved, HWND hWnd, const RECT* rect);
 BOOL TrackPopupMenuEx(HMENU hMenu, UINT flags, int x, int y, HWND hWnd, void* params);
+struct TPMPARAMS
+{
+	UINT cbSize;
+	RECT rcExclude;
+};
+typedef TPMPARAMS tagTPMPARAMS;
+typedef TPMPARAMS* LPTPMPARAMS;
 HMENU LoadMenuW(HINSTANCE hInst, LPCWSTR name);
 #define LoadMenu LoadMenuW
 HACCEL CreateAcceleratorTableW(LPACCEL accels, int count);
@@ -376,6 +506,10 @@ UINT MapVirtualKeyW(UINT code, UINT mapType);
 #define MapVirtualKey MapVirtualKeyW
 SHORT VkKeyScanW(WCHAR ch);
 #define VkKeyScan VkKeyScanW
+typedef void* HKL;
+HKL GetKeyboardLayout(DWORD threadId);
+SHORT VkKeyScanExW(WCHAR ch, HKL layout);
+#define VkKeyScanEx VkKeyScanExW
 int GetKeyNameTextW(LONG lParam, LPWSTR text, int max);
 #define GetKeyNameText GetKeyNameTextW
 UINT GetDoubleClickTime();
@@ -406,6 +540,8 @@ HMONITOR MonitorFromWindow(HWND hWnd, DWORD flags);
 HMONITOR MonitorFromRect(LPCRECT rect, DWORD flags);
 HMONITOR MonitorFromPoint(POINT pt, DWORD flags);
 BOOL GetMonitorInfoW(HMONITOR hMonitor, LPMONITORINFO info);
+typedef BOOL (CALLBACK* MONITORENUMPROC)(HMONITOR hMonitor, HDC hdc, LPRECT rect, LPARAM data);
+BOOL EnumDisplayMonitors(HDC hdc, LPCRECT clip, MONITORENUMPROC proc, LPARAM data);
 #define GetMonitorInfo GetMonitorInfoW
 
 // ---- rectangles --------------------------------------------------------------------------
@@ -463,6 +599,7 @@ BOOL IsCharLowerW(WCHAR c);
 int wsprintfW(LPWSTR buffer, LPCWSTR format, ...);
 int wsprintfA(LPSTR buffer, LPCSTR format, ...);
 int wvsprintfW(LPWSTR buffer, LPCWSTR format, va_list args);
+inline int wvsprintfA(LPSTR buffer, LPCSTR format, va_list args) { return vsprintf(buffer, format, args); }
 #define wsprintf wsprintfW
 #define wvsprintf wvsprintfW
 
@@ -494,6 +631,30 @@ HBRUSH CreateSolidBrush(COLORREF color);
 HBRUSH CreateBrushIndirect(const LOGBRUSH* lb);
 HBRUSH CreatePatternBrush(HBITMAP hbm);
 HBRUSH CreateHatchBrush(int hatch, COLORREF color);
+
+// ---- processes, consoles, jobs, security (Kernel.cpp) ------------------------------------
+BOOL InitializeProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST list, DWORD count, DWORD flags, PSIZE_T size); // fails
+BOOL UpdateProcThreadAttribute(LPPROC_THREAD_ATTRIBUTE_LIST list, DWORD flags, DWORD_PTR attribute, PVOID value, SIZE_T size, PVOID previous, PSIZE_T returnSize);
+void DeleteProcThreadAttributeList(LPPROC_THREAD_ATTRIBUTE_LIST list);
+HANDLE CreateJobObjectW(LPSECURITY_ATTRIBUTES sa, LPCWSTR name); // NULL: no job objects
+#define CreateJobObject CreateJobObjectW
+BOOL SetInformationJobObject(HANDLE job, JOBOBJECTINFOCLASS infoClass, LPVOID info, DWORD size);
+BOOL AssignProcessToJobObject(HANDLE job, HANDLE process);
+BOOL IsProcessInJob(HANDLE process, HANDLE job, PBOOL result);
+BOOL TerminateJobObject(HANDLE job, UINT exitCode);
+BOOL SetConsoleCtrlHandler(PHANDLER_ROUTINE handler, BOOL add);
+BOOL GenerateConsoleCtrlEvent(DWORD ctrlEvent, DWORD processGroupId); // SIGINT to the process (group)
+BOOL AllocConsole();
+BOOL FreeConsole();
+BOOL AttachConsole(DWORD processId);
+inline BOOL InitializeSecurityDescriptor(PSECURITY_DESCRIPTOR, DWORD) { return TRUE; }
+inline BOOL SetSecurityDescriptorDacl(PSECURITY_DESCRIPTOR, BOOL, PACL, BOOL) { return TRUE; }
+BOOL GetGUIThreadInfo(DWORD threadId, PGUITHREADINFO info);
+BOOL GetCaretPos(LPPOINT point);
+BOOL IsMenu(HMENU menu);
+DWORD SearchPathW(LPCWSTR path, LPCWSTR fileName, LPCWSTR extension, DWORD bufferLength, LPWSTR buffer, LPWSTR* filePart);
+#define SearchPath SearchPathW
+BOOL SetFileTime(HANDLE file, const FILETIME* created, const FILETIME* accessed, const FILETIME* written);
 HPEN CreatePen(int style, int width, COLORREF color);
 HFONT CreateFontIndirectW(const LOGFONTW* lf);
 HFONT CreateFontW(int height, int width, int escapement, int orientation, int weight, DWORD italic, DWORD underline,
@@ -531,6 +692,7 @@ BOOL Polyline(HDC hdc, const POINT* pts, int count);
 BOOL MoveToEx(HDC hdc, int x, int y, LPPOINT old);
 BOOL LineTo(HDC hdc, int x, int y);
 COLORREF SetPixel(HDC hdc, int x, int y, COLORREF color);
+inline BOOL SetPixelV(HDC hdc, int x, int y, COLORREF color) { return SetPixel(hdc, x, y, color) != CLR_INVALID; }
 COLORREF GetPixel(HDC hdc, int x, int y);
 BOOL DrawFocusRect(HDC hdc, const RECT* rc);
 BOOL DrawEdge(HDC hdc, LPRECT rc, UINT edge, UINT flags);
@@ -561,8 +723,62 @@ int GetDeviceCaps(HDC hdc, int index);
 BOOL BitBlt(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, DWORD rop);
 BOOL StretchBlt(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, int scx, int scy, DWORD rop);
 BOOL PatBlt(HDC hdc, int x, int y, int cx, int cy, DWORD rop);
+#define LF_FULLFACESIZE 64
+#define RASTER_FONTTYPE 0x0001
+#define DEVICE_FONTTYPE 0x0002
+#define TRUETYPE_FONTTYPE 0x0004
+struct ENUMLOGFONTEXW
+{
+	LOGFONTW elfLogFont;
+	WCHAR elfFullName[LF_FULLFACESIZE];
+	WCHAR elfStyle[LF_FACESIZE];
+	WCHAR elfScript[LF_FACESIZE];
+};
+typedef ENUMLOGFONTEXW ENUMLOGFONTEX;
+typedef ENUMLOGFONTEXW* LPENUMLOGFONTEXW;
+typedef ENUMLOGFONTEXW* LPENUMLOGFONTEX;
+struct FONTSIGNATURE
+{
+	DWORD fsUsb[4];
+	DWORD fsCsb[2];
+};
+struct NEWTEXTMETRICW
+{
+	LONG tmHeight, tmAscent, tmDescent, tmInternalLeading, tmExternalLeading, tmAveCharWidth, tmMaxCharWidth, tmWeight,
+		tmOverhang, tmDigitizedAspectX, tmDigitizedAspectY;
+	WCHAR tmFirstChar, tmLastChar, tmDefaultChar, tmBreakChar;
+	BYTE tmItalic, tmUnderlined, tmStruckOut, tmPitchAndFamily, tmCharSet;
+	DWORD ntmFlags;
+	UINT ntmSizeEM, ntmCellHeight, ntmAvgWidth;
+};
+struct NEWTEXTMETRICEXW
+{
+	NEWTEXTMETRICW ntmTm;
+	FONTSIGNATURE ntmFontSig;
+};
+typedef NEWTEXTMETRICW NEWTEXTMETRIC;
+typedef NEWTEXTMETRICEXW NEWTEXTMETRICEX;
+typedef int (CALLBACK* FONTENUMPROCW)(const LOGFONTW* logFont, const TEXTMETRICW* metric, DWORD fontType, LPARAM data);
+typedef FONTENUMPROCW FONTENUMPROC;
+// the families of the font database (lfFaceName empty: all, else that one), once each
+int EnumFontFamiliesExW(HDC hdc, LPLOGFONTW logFont, FONTENUMPROCW proc, LPARAM data, DWORD flags);
+int EnumFontFamiliesW(HDC hdc, LPCWSTR family, FONTENUMPROCW proc, LPARAM data);
+#define EnumFontFamiliesEx EnumFontFamiliesExW
+#define EnumFontFamilies EnumFontFamiliesW
+BOOL SetBrushOrgEx(HDC hdc, int x, int y, LPPOINT old);
+BOOL GetBrushOrgEx(HDC hdc, LPPOINT pt);
 BOOL TransparentBlt(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, int scx, int scy, UINT transparent);
-BOOL AlphaBlend(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, int scx, int scy, DWORD blend);
+typedef struct {
+	BYTE BlendOp;
+	BYTE BlendFlags;
+	BYTE SourceConstantAlpha;
+	BYTE AlphaFormat;
+} BLENDFUNCTION, *PBLENDFUNCTION;
+#define AC_SRC_OVER 0x00
+#define AC_SRC_ALPHA 0x01
+// SourceConstantAlpha over the alpha of the bitmap (QImage), the formats of Qt with alpha are premultiplied
+BOOL AlphaBlend(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, int scx, int scy, BLENDFUNCTION blend);
+#define GdiAlphaBlend AlphaBlend
 int SetStretchBltMode(HDC hdc, int mode);
 BOOL GdiFlush();
 
@@ -662,6 +878,37 @@ LANGID GetUserDefaultUILanguage();
 LANGID GetUserDefaultLangID();
 int GetLocaleInfoW(LCID locale, DWORD type, LPWSTR data, int max);
 int GetLocaleInfoEx(LPCWSTR locale, DWORD type, LPWSTR data, int max);
+BOOL IsValidLocaleName(LPCWSTR name); // a language QLocale knows ("en-US", "de")
+#define LOCALE_RETURN_NUMBER 0x20000000
+#define LOCALE_SLOCALIZEDDISPLAYNAME 0x00000002
+#define LOCALE_SENGLISHLANGUAGENAME 0x00001001
+#define LOCALE_SNATIVELANGUAGENAME 0x00000004
+#define LOCALE_SENGLISHCOUNTRYNAME 0x00001002
+#define LOCALE_SNATIVECOUNTRYNAME 0x00000008
+#define LOCALE_SNAME 0x0000005c
+#define LOCALE_SENGLISHDISPLAYNAME 0x00000072
+#define LOCALE_SNATIVEDISPLAYNAME 0x00000073
+#define LOCALE_NOUSEROVERRIDE 0x80000000
+#define LOCALE_SGROUPING 0x00000010
+#define LOCALE_IDIGITS 0x00000011
+#define LOCALE_ILZERO 0x00000012
+#define LOCALE_INEGNUMBER 0x00001010
+#define LOCALE_SNEGATIVESIGN 0x00000051
+struct NUMBERFMTW
+{
+	UINT NumDigits;
+	UINT LeadingZero;
+	UINT Grouping;
+	LPWSTR lpDecimalSep;
+	LPWSTR lpThousandSep;
+	UINT NegativeOrder;
+};
+typedef NUMBERFMTW NUMBERFMT;
+typedef NUMBERFMTW* LPNUMBERFMTW;
+typedef NUMBERFMTW* LPNUMBERFMT;
+int GetNumberFormatW(LCID locale, DWORD flags, LPCWSTR value, const NUMBERFMTW* format, LPWSTR out, int max);
+int GetNumberFormatEx(LPCWSTR locale, DWORD flags, LPCWSTR value, const NUMBERFMTW* format, LPWSTR out, int max);
+#define GetNumberFormat GetNumberFormatW
 #define GetLocaleInfo GetLocaleInfoW
 #define LOCALE_SDECIMAL 0x0000000E
 #define LOCALE_STHOUSAND 0x0000000F
@@ -684,6 +931,21 @@ BOOL WriteFile(HANDLE h, LPCVOID buffer, DWORD toWrite, LPDWORD written, LPOVERL
 BOOL FlushFileBuffers(HANDLE h);
 BOOL CloseHandle(HANDLE h);
 DWORD GetFileSize(HANDLE h, LPDWORD high);
+struct BY_HANDLE_FILE_INFORMATION
+{
+	DWORD dwFileAttributes;
+	FILETIME ftCreationTime;
+	FILETIME ftLastAccessTime;
+	FILETIME ftLastWriteTime;
+	DWORD dwVolumeSerialNumber;
+	DWORD nFileSizeHigh;
+	DWORD nFileSizeLow;
+	DWORD nNumberOfLinks;
+	DWORD nFileIndexHigh; // the inode
+	DWORD nFileIndexLow;
+};
+typedef BY_HANDLE_FILE_INFORMATION* LPBY_HANDLE_FILE_INFORMATION;
+BOOL GetFileInformationByHandle(HANDLE h, LPBY_HANDLE_FILE_INFORMATION info);
 BOOL GetFileSizeEx(HANDLE h, PLARGE_INTEGER size);
 DWORD SetFilePointer(HANDLE h, LONG distance, PLONG high, DWORD method);
 BOOL SetFilePointerEx(HANDLE h, LARGE_INTEGER distance, PLARGE_INTEGER newPos, DWORD method);
@@ -745,6 +1007,22 @@ BOOL GetDiskFreeSpaceExW(LPCWSTR dir, PULARGE_INTEGER freeToCaller, PULARGE_INTE
 UINT GetDriveTypeW(LPCWSTR root);
 #define GetDriveType GetDriveTypeW
 DWORD GetLogicalDrives();
+BOOL GetVolumeInformationW(LPCWSTR root, LPWSTR volumeName, DWORD volumeNameSize, LPDWORD serial, LPDWORD maxComponent,
+	LPDWORD fsFlags, LPWSTR fsName, DWORD fsNameSize);
+#define GetVolumeInformation GetVolumeInformationW
+struct COMBOBOXINFO
+{
+	DWORD cbSize;
+	RECT rcItem;
+	RECT rcButton;
+	DWORD stateButton;
+	HWND hwndCombo;
+	HWND hwndItem; // the combo box itself: the messages of its edit go to it
+	HWND hwndList;
+};
+typedef COMBOBOXINFO* PCOMBOBOXINFO;
+typedef COMBOBOXINFO* LPCOMBOBOXINFO;
+BOOL GetComboBoxInfo(HWND hwndCombo, PCOMBOBOXINFO info);
 DWORD GetLogicalDriveStringsW(DWORD max, LPWSTR buffer);
 #define GetLogicalDriveStrings GetLogicalDriveStringsW
 #define DRIVE_UNKNOWN 0
@@ -799,6 +1077,7 @@ HMODULE GetModuleHandleA(LPCSTR name);
 BOOL GetModuleHandleExW(DWORD flags, LPCWSTR name, HMODULE* hModule);
 #define GetModuleHandle GetModuleHandleW
 #define GetModuleHandleEx GetModuleHandleExW
+#define GET_MODULE_HANDLE_EX_FLAG_PIN 0x00000001 // modules of the plugins stay loaded until Notepad++ exits
 #define GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS 0x00000004
 #define GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT 0x00000002
 HMODULE LoadLibraryW(LPCWSTR path);
@@ -851,6 +1130,8 @@ DWORD MsgWaitForMultipleObjects(DWORD count, const HANDLE* handles, BOOL all, DW
 #define QS_ALLINPUT 0x04FF
 HANDLE CreateEventW(LPSECURITY_ATTRIBUTES sa, BOOL manualReset, BOOL initialState, LPCWSTR name);
 #define CreateEvent CreateEventW
+HANDLE OpenEventW(DWORD access, BOOL inherit, LPCWSTR name); // events of CreateEvent with a name in this process
+#define OpenEvent OpenEventW
 BOOL SetEvent(HANDLE h);
 BOOL ResetEvent(HANDLE h);
 HANDLE CreateMutexW(LPSECURITY_ATTRIBUTES sa, BOOL initialOwner, LPCWSTR name);
@@ -933,7 +1214,75 @@ struct OSVERSIONINFOW
 	WCHAR szCSDVersion[128];
 };
 typedef OSVERSIONINFOW OSVERSIONINFO;
+typedef OSVERSIONINFOW* LPOSVERSIONINFOW;
+typedef OSVERSIONINFOW* LPOSVERSIONINFO;
+struct OSVERSIONINFOEXW
+{
+	DWORD dwOSVersionInfoSize;
+	DWORD dwMajorVersion;
+	DWORD dwMinorVersion;
+	DWORD dwBuildNumber;
+	DWORD dwPlatformId;
+	WCHAR szCSDVersion[128];
+	WORD wServicePackMajor;
+	WORD wServicePackMinor;
+	WORD wSuiteMask;
+	BYTE wProductType;
+	BYTE wReserved;
+};
+typedef OSVERSIONINFOEXW OSVERSIONINFOEX;
+typedef OSVERSIONINFOEXW* LPOSVERSIONINFOEXW;
+typedef OSVERSIONINFOEXW* LPOSVERSIONINFOEX;
+#define VER_NT_WORKSTATION 0x0000001
+#define VER_NT_DOMAIN_CONTROLLER 0x0000002
+#define VER_NT_SERVER 0x0000003
+// GetProductInfo: a desktop edition here (PRODUCT_PROFESSIONAL), never a "server core"
+BOOL GetProductInfo(DWORD major, DWORD minor, DWORD spMajor, DWORD spMinor, PDWORD productType);
+#define PRODUCT_UNDEFINED 0x00000000
+#define PRODUCT_ULTIMATE 0x00000001
+#define PRODUCT_HOME_BASIC 0x00000002
+#define PRODUCT_HOME_PREMIUM 0x00000003
+#define PRODUCT_ENTERPRISE 0x00000004
+#define PRODUCT_BUSINESS 0x00000006
+#define PRODUCT_STANDARD_SERVER 0x00000007
+#define PRODUCT_DATACENTER_SERVER 0x00000008
+#define PRODUCT_ENTERPRISE_SERVER 0x0000000A
+#define PRODUCT_STARTER 0x0000000B
+#define PRODUCT_DATACENTER_SERVER_CORE 0x0000000C
+#define PRODUCT_STANDARD_SERVER_CORE 0x0000000D
+#define PRODUCT_ENTERPRISE_SERVER_CORE 0x0000000E
+#define PRODUCT_WEB_SERVER_CORE 0x0000001D
+#define PRODUCT_STANDARD_SERVER_CORE_V 0x00000028
+#define PRODUCT_DATACENTER_SERVER_CORE_V 0x00000027
+#define PRODUCT_ENTERPRISE_SERVER_CORE_V 0x00000029
+#define PRODUCT_STORAGE_EXPRESS_SERVER_CORE 0x0000002B
+#define PRODUCT_STORAGE_STANDARD_SERVER_CORE 0x0000002C
+#define PRODUCT_STORAGE_WORKGROUP_SERVER_CORE 0x0000002D
+#define PRODUCT_STORAGE_ENTERPRISE_SERVER_CORE 0x0000002E
+#define PRODUCT_PROFESSIONAL 0x00000030
+#define PRODUCT_STANDARD_SERVER_SOLUTIONS_CORE 0x00000035
+#define PRODUCT_SMALLBUSINESS_SERVER_PREMIUM_CORE 0x0000003F
+#define PRODUCT_DATACENTER_A_SERVER_CORE 0x00000091
+#define PRODUCT_STANDARD_A_SERVER_CORE 0x00000092
 BOOL GetVersionExW(OSVERSIONINFOW* vi);
+#define IS_TEXT_UNICODE_ASCII16 0x0001
+#define IS_TEXT_UNICODE_REVERSE_ASCII16 0x0010
+#define IS_TEXT_UNICODE_STATISTICS 0x0002
+#define IS_TEXT_UNICODE_REVERSE_STATISTICS 0x0020
+#define IS_TEXT_UNICODE_CONTROLS 0x0004
+#define IS_TEXT_UNICODE_REVERSE_CONTROLS 0x0040
+#define IS_TEXT_UNICODE_SIGNATURE 0x0008
+#define IS_TEXT_UNICODE_REVERSE_SIGNATURE 0x0080
+#define IS_TEXT_UNICODE_ILLEGAL_CHARS 0x0100
+#define IS_TEXT_UNICODE_ODD_LENGTH 0x0200
+#define IS_TEXT_UNICODE_DBCS_LEADBYTE 0x0400
+#define IS_TEXT_UNICODE_NULL_BYTES 0x1000
+#define IS_TEXT_UNICODE_UNICODE_MASK 0x000F
+#define IS_TEXT_UNICODE_REVERSE_MASK 0x00F0
+#define IS_TEXT_UNICODE_NOT_UNICODE_MASK 0x0F00
+#define IS_TEXT_UNICODE_NOT_ASCII_MASK 0xF000
+// is the buffer UTF-16 (little endian)? the tests of the flags asked, the results in *result
+BOOL IsTextUnicode(const void* buffer, int size, LPINT result);
 #define GetVersionEx GetVersionExW
 DWORD GetVersion();
 inline bool IsWindowsVistaOrGreater() { return true; }
@@ -1102,11 +1451,29 @@ template <size_t N> inline int npp_vswprintf(wchar_t (&buffer)[N], const wchar_t
 #define _stprintf_s npp_swprintf
 #define _sntprintf npp_snwprintf
 #define _vstprintf_s npp_vswprintf
-#define sprintf_s snprintf
+// sprintf_s(buffer, size, format, ...) and sprintf_s(char (&buffer)[N], format, ...) of MSVC
+inline int npp_sprintf_s(char* buffer, size_t size, const char* format, ...)
+{
+	va_list ap;
+	va_start(ap, format);
+	const int n = vsnprintf(buffer, size, format, ap);
+	va_end(ap);
+	return n;
+}
+template <size_t N> inline int npp_sprintf_s(char (&buffer)[N], const char* format, ...)
+{
+	va_list ap;
+	va_start(ap, format);
+	const int n = vsnprintf(buffer, N, format, ap);
+	va_end(ap);
+	return n;
+}
+#define sprintf_s npp_sprintf_s
 #define _snprintf snprintf
 #define _snprintf_s(b, n, c, ...) snprintf(b, n, __VA_ARGS__)
 #define _vsnprintf vsnprintf
 #define vsprintf_s vsnprintf
+#define vsnprintf_s(b, n, c, f, a) vsnprintf(b, n, f, a)
 #define strncpy_s(d, n, s, c) npp_strncpy_s(d, n, s, c)
 #define _wcsicmp wcscasecmp
 #define _wcsnicmp wcsncasecmp
@@ -1138,9 +1505,52 @@ template <size_t N> inline int npp_vswprintf(wchar_t (&buffer)[N], const wchar_t
 #define _tcsrchr wcsrchr
 #define _tcsstr wcsstr
 #define _tcstok wcstok
+#define _tcsncat wcsncat
+// wcstok of MSVC: two arguments, the position kept between the calls (per thread)
+inline wchar_t* wcstok(wchar_t* s, const wchar_t* delim)
+{
+	static thread_local wchar_t* context = nullptr;
+	return ::wcstok(s, delim, &context);
+}
 #define _tcstol std::wcstol
 #define _tcstoul std::wcstoul
 #define _tcsdup wcsdup
+#define _tcscpy_s wcscpy_s
+#define _tcsncpy_s wcsncpy_s
+#define _tcscat_s wcscat_s
+#define _tcsncat_s wcsncat_s
+#define _tcsnlen wcsnlen
+#define _tcsspn wcsspn
+#define _tcscspn wcscspn
+#define _tcspbrk wcspbrk
+#define _tcsncicmp wcsncasecmp
+#define _tcsnccmp wcsncmp
+#define _tcscoll wcscoll
+#define _tcsicoll wcscasecmp
+#define _tcstod std::wcstod
+#define _tcstok_s wcstok
+#define _tcslwr npp_wcslwr
+#define _tcsupr npp_wcsupr
+#define _tcslwr_s(s, n) npp_wcslwr(s)
+#define _tcsupr_s(s, n) npp_wcsupr(s)
+#define _tfopen npp_wfopen
+#define _tfopen_s _wfopen_s
+#define _tremove npp_wremove
+#define _trename npp_wrename
+#define _tgetenv npp_wgetenv
+#define _tsystem npp_wsystem
+#define _itot npp_itow
+#define _itot_s _itow_s
+#define _ttoi64 _wtoi64
+#define _tstoi _wtoi
+#define _tstof _wtof
+#define _ftprintf npp_fwprintf
+#define _tprintf npp_wprintf
+#define _stscanf npp_swscanf
+#define _sntprintf_s _snwprintf_s
+#define _vsntprintf npp_vsnwprintf
+#define _tsplitpath_s npp_wsplitpath_s
+#define _tmakepath_s npp_wmakepath_s
 #define _ttoi _wtoi
 #define _ttol _wtol
 #define _totupper towupper
@@ -1179,17 +1589,47 @@ template <size_t N> inline int npp_vswprintf(wchar_t (&buffer)[N], const wchar_t
 #define _ultow npp_ultow
 #define _i64tow npp_i64tow
 #define _ui64tow npp_ui64tow
-#define _itow_s(v, b, n, r) npp_itow(v, b, r)
-#define _itoa_s(v, b, n, r) npp_itoa(v, b, r)
-#define _ltow_s(v, b, n, r) npp_itow(v, b, r)
-#define _i64tow_s(v, b, n, r) npp_i64tow(v, b, r)
-#define _ui64tow_s(v, b, n, r) npp_ui64tow(v, b, r)
+wchar_t* npp_itow(int value, wchar_t* buffer, int radix);
+char* npp_itoa(int value, char* buffer, int radix);
+wchar_t* npp_i64tow(long long value, wchar_t* buffer, int radix);
+wchar_t* npp_ui64tow(unsigned long long value, wchar_t* buffer, int radix);
+// the _s conversions of MSVC: with the buffer size, or a buffer array (template overload)
+#define NPP_CONVERT_S(name, type, ch, impl) \
+	inline int name(type v, ch* b, size_t, int r) { impl(v, b, r); return 0; } \
+	template <size_t N> inline int name(type v, ch (&b)[N], int r) { impl(v, b, r); return 0; }
+NPP_CONVERT_S(_itow_s, int, wchar_t, npp_itow)
+NPP_CONVERT_S(_itoa_s, int, char, npp_itoa)
+NPP_CONVERT_S(_ltow_s, long, wchar_t, npp_itow)
+NPP_CONVERT_S(_i64tow_s, long long, wchar_t, npp_i64tow)
+NPP_CONVERT_S(_ui64tow_s, unsigned long long, wchar_t, npp_ui64tow)
+#undef NPP_CONVERT_S
+#define _fwprintf_p fwprintf // glibc knows the positional arguments (%1$s)
+#define _wprintf_p wprintf
+#define _swprintf_p swprintf
+// _wopen: open() with a wide path
+#define _O_RDONLY O_RDONLY
+#define _O_WRONLY O_WRONLY
+#define _O_RDWR O_RDWR
+#define _O_APPEND O_APPEND
+#define _O_CREAT O_CREAT
+#define _O_TRUNC O_TRUNC
+#define _O_EXCL O_EXCL
+#define _O_BINARY 0
+#define _O_TEXT 0
+#define _O_NOINHERIT O_CLOEXEC
+#define _S_IREAD 0400
+#define _S_IWRITE 0200
+int _wopen(const wchar_t* path, int flags, int mode = 0644);
 #define _wfopen npp_wfopen
 #define _wfopen_s(f, p, m) ((*(f) = npp_wfopen(p, m)) ? 0 : 2)
 #define fopen_s(f, p, m) ((*(f) = std::fopen(p, m)) ? 0 : 2)
 #define _wremove npp_wremove
 #define _wrename npp_wrename
 #define _wmkdir npp_wmkdir
+#define _wchdir npp_wchdir
+#define _wgetcwd npp_wgetcwd
+#define _wgetdcwd(drive, buffer, len) npp_wgetcwd(buffer, len)
+#define _getdrive() 0 // no drives: the current folder of _wgetdcwd is the current folder
 #define _wgetenv npp_wgetenv
 #define _wsystem npp_wsystem
 #define _wcsset npp_wcsset
@@ -1216,9 +1656,15 @@ wchar_t* npp_ultow(unsigned long value, wchar_t* buffer, int radix);
 wchar_t* npp_i64tow(long long value, wchar_t* buffer, int radix);
 wchar_t* npp_ui64tow(unsigned long long value, wchar_t* buffer, int radix);
 FILE* npp_wfopen(const wchar_t* path, const wchar_t* mode);
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
+// a name for a temporary file (Windows: in the current folder; here: in the temporary folder)
+wchar_t* _wtmpnam(wchar_t* buffer);
 int npp_wremove(const wchar_t* path);
 int npp_wrename(const wchar_t* from, const wchar_t* to);
 int npp_wmkdir(const wchar_t* path);
+int npp_wchdir(const wchar_t* path);
+wchar_t* npp_wgetcwd(wchar_t* buffer, int len); // buffer NULL: malloc'ed (free)
 wchar_t* npp_wgetenv(const wchar_t* name);
 int npp_wsystem(const wchar_t* command);
 int npp_wsplitpath_s(const wchar_t* path, wchar_t* drive, size_t driveLen, wchar_t* dir, size_t dirLen, wchar_t* fname, size_t fnameLen, wchar_t* ext, size_t extLen);

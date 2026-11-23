@@ -17,3 +17,4 @@
 // Notepad++ Linux plugin SDK: part of <windows.h>.
 #pragma once
 #include <windows.h>
+#include <shlwapi.h> // like ATL, through atlcore.h

@@ -76,6 +76,7 @@ class QAction;
 class QDockWidget;
 class QLibrary;
 class QMenu;
+class QPoint;
 class QWidget;
 struct Buffer;
 struct NppHandle;
@@ -101,10 +102,12 @@ public:
 	void notifyReady();            // NPPN_READY
 	void notify(unsigned int code, uptr_t idFrom, void* hwndFrom = nullptr); // NPPN_ notifications from the main window
 	void notifyBuffer(unsigned int code, const Buffer* buf);
+	void notifyBeforeSave(Buffer* buf, const QString& target);
 	void relayScintilla(const Scintilla::NotificationData* scn, int view); // SCN_ notifications of both views
 	void runCommand(int id);       // plugin menu commands
 	bool hasPlugins() const { return !_plugins.empty(); }
 	bool isReady() const { return _ready; }
+	void setDestroying() { _destroying = true; } // ~MainWindow: no more messages nor notifications
 	int count() const { return static_cast<int>(_plugins.size()); }
 	QStringList loadedModules() const;   // "mimeTools.so" ...
 	QStringList loadErrors() const { return _errors; }
@@ -118,6 +121,15 @@ public:
 	NppHandle* nppHandle() const { return _nppHandle; }
 	NppHandle* scintillaHandle(int view) const { return _sciHandles[view]; }
 	intptr_t message(unsigned int msg, uintptr_t wParam, intptr_t lParam); // SendMessage to nppData._nppHandle
+	static int langTypeOf(const Buffer* b);              // L_EXTERNAL + n for the lexer n of the lexer plugins
+	static QString externalLexerName(intptr_t langType); // the lexer of L_EXTERNAL + n, empty otherwise
+	// a menu command through the procedures of plugins that subclass the main window
+	// (NPPM_LINUX_SUBCLASSNPP); false: no such plugin, or the command is being run
+	bool routeCommand(int id);
+	// the context menu of an editing view, like Notepad++: WM_CONTEXTMENU through the subclasses of plugins, then
+	// Notepad++ shows the menu; initMenuPopup sends WM_INITMENUPOPUP for a menu about to open (plugins add items)
+	void editorContextMenu(int view, const QPoint& globalPos);
+	void initMenuPopup(QMenu* menu);
 
 private:
 	struct Plugin;
@@ -149,9 +161,12 @@ private:
 	std::vector<Dock> _docks;
 	std::vector<std::unique_ptr<NppHandle>> _handles;
 	QHash<QMenu*, NppHandle*> _menuHandles;
+	NppHandle* _popupMenuHandle = nullptr; // the menu of initMenuPopup (a temporary QMenu)
 	NppHandle* _nppHandle = nullptr;
 	NppHandle* _sciHandles[2] = {};
 	QStringList _errors;
+	Buffer* _savingBuffer = nullptr;
+	QString _saveTarget;
 	int _nextCmdId;
 	int _nextDynamicId;
 	int _nextMarker;
@@ -159,5 +174,16 @@ private:
 	unsigned int _scnModifiedFlags;
 	bool _ready = false;
 	QHash<QString, int> _externalAutoIndent; // NPPM_SETEXTERNALLEXERAUTOINDENTMODE
+	struct WndHook
+	{
+		intptr_t (*dispatch)(void*, unsigned int, uintptr_t, intptr_t);
+		void* context;
+	};
+	std::vector<WndHook> _wndHooks; // subclasses of the main window, the last one first
+	size_t _wndHookLevel = 0;
+	bool _routing = false;
+	bool _destroying = false;
+	intptr_t handleMessage(unsigned int msg, uintptr_t wParam, intptr_t lParam);
+	intptr_t dispatchHooks(unsigned int msg, uintptr_t wParam, intptr_t lParam); // the subclasses from _wndHookLevel on, then handleMessage
 	QList<QAction*> _toolbarActions;
 };

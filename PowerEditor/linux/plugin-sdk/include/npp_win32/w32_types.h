@@ -36,6 +36,18 @@
 #endif
 #ifndef WINAPI
 #define WINAPI
+#ifndef FAR
+#define FAR
+#endif
+#ifndef NEAR
+#define NEAR
+#endif
+#ifndef CONST
+#define CONST const
+#endif
+#define __RPC_FAR
+#define __RPC_USER
+#define __RPC_STUB
 #endif
 #ifndef WINAPIV
 #define WINAPIV
@@ -79,9 +91,12 @@
 
 // ---- basic types ------------------------------------------------------------------
 typedef int BOOL;
+typedef int errno_t; // C run time of Microsoft
+typedef struct __locale_struct* _locale_t; // locale_t of glibc
 typedef unsigned char BOOLEAN;
 typedef unsigned char BYTE;
 typedef unsigned char UCHAR;
+typedef unsigned char byte; // rpcndr.h of Windows
 typedef char CHAR;
 typedef char CCHAR;
 typedef unsigned short WORD;
@@ -134,6 +149,7 @@ typedef LONG* LPLONG;
 typedef LONG* PLONG;
 typedef int* LPINT;
 typedef UINT* PUINT;
+typedef UINT* LPUINT;
 typedef intptr_t INT_PTR;
 typedef intptr_t* PINT_PTR;
 typedef uintptr_t UINT_PTR;
@@ -151,6 +167,7 @@ typedef DWORD COLORREF;
 typedef DWORD* LPCOLORREF;
 typedef LONG HRESULT;
 typedef DWORD LCID;
+typedef DWORD LCTYPE;
 typedef WORD LANGID;
 typedef WORD ATOM;
 typedef DWORD ACCESS_MASK;
@@ -233,6 +250,8 @@ typedef intptr_t (WINAPI* FARPROC)();
 struct RECT { LONG left; LONG top; LONG right; LONG bottom; };
 struct POINT { LONG x; LONG y; };
 struct POINTS { SHORT x; SHORT y; };
+struct POINTL { LONG x; LONG y; };
+typedef POINTL* PPOINTL;
 struct SIZE { LONG cx; LONG cy; };
 typedef RECT* LPRECT;
 typedef RECT* PRECT;
@@ -318,6 +337,48 @@ struct STARTUPINFOW
 	HANDLE hStdError;
 };
 typedef STARTUPINFOW STARTUPINFO;
+typedef SIZE_T* PSIZE_T;
+struct COORD { SHORT X; SHORT Y; };
+typedef COORD* PCOORD;
+// process and thread attributes: InitializeProcThreadAttributeList fails here (no pseudo consoles)
+typedef struct _PROC_THREAD_ATTRIBUTE_LIST* LPPROC_THREAD_ATTRIBUTE_LIST;
+typedef LPPROC_THREAD_ATTRIBUTE_LIST PPROC_THREAD_ATTRIBUTE_LIST;
+struct STARTUPINFOEXW { STARTUPINFOW StartupInfo; LPPROC_THREAD_ATTRIBUTE_LIST lpAttributeList; };
+typedef STARTUPINFOEXW STARTUPINFOEX;
+typedef STARTUPINFOEXW* LPSTARTUPINFOEXW;
+typedef STARTUPINFOEXW* LPSTARTUPINFOEX;
+// job objects: CreateJobObject fails here
+struct JOBOBJECT_BASIC_LIMIT_INFORMATION
+{
+	LARGE_INTEGER PerProcessUserTimeLimit;
+	LARGE_INTEGER PerJobUserTimeLimit;
+	DWORD LimitFlags;
+	SIZE_T MinimumWorkingSetSize;
+	SIZE_T MaximumWorkingSetSize;
+	DWORD ActiveProcessLimit;
+	ULONG_PTR Affinity;
+	DWORD PriorityClass;
+	DWORD SchedulingClass;
+};
+struct IO_COUNTERS { ULONGLONG ReadOperationCount, WriteOperationCount, OtherOperationCount, ReadTransferCount, WriteTransferCount, OtherTransferCount; };
+struct JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+{
+	JOBOBJECT_BASIC_LIMIT_INFORMATION BasicLimitInformation;
+	IO_COUNTERS IoInfo;
+	SIZE_T ProcessMemoryLimit;
+	SIZE_T JobMemoryLimit;
+	SIZE_T PeakProcessMemoryUsed;
+	SIZE_T PeakJobMemoryUsed;
+};
+enum JOBOBJECTINFOCLASS { JobObjectBasicLimitInformation = 2, JobObjectExtendedLimitInformation = 9 };
+// security descriptors are accepted and ignored
+struct SECURITY_DESCRIPTOR { BYTE Revision; BYTE Sbz1; WORD Control; PVOID Owner; PVOID Group; PVOID Sacl; PVOID Dacl; };
+typedef PVOID PSECURITY_DESCRIPTOR;
+typedef PVOID PACL;
+struct GUITHREADINFO { DWORD cbSize; DWORD flags; HWND hwndActive; HWND hwndFocus; HWND hwndCapture; HWND hwndMenuOwner; HWND hwndMoveSize; HWND hwndCaret; RECT rcCaret; };
+typedef GUITHREADINFO* PGUITHREADINFO;
+typedef GUITHREADINFO* LPGUITHREADINFO;
+typedef BOOL (*PHANDLER_ROUTINE)(DWORD ctrlType);
 typedef STARTUPINFOW* LPSTARTUPINFOW;
 typedef STARTUPINFOW* LPSTARTUPINFO;
 struct PROCESS_INFORMATION
@@ -545,6 +606,25 @@ struct SCROLLINFO
 };
 typedef SCROLLINFO* LPSCROLLINFO;
 typedef const SCROLLINFO* LPCSCROLLINFO;
+struct SCROLLBARINFO
+{
+	DWORD cbSize;
+	RECT rcScrollBar; // screen coordinates
+	int dxyLineButton;
+	int xyThumbTop;
+	int xyThumbBottom;
+	int reserved;
+	DWORD rgstate[6]; // CCHILDREN_SCROLLBAR + 1
+};
+typedef SCROLLBARINFO* PSCROLLBARINFO;
+typedef SCROLLBARINFO* LPSCROLLBARINFO;
+#define OBJID_HSCROLL ((LONG)0xFFFFFFFA)
+#define OBJID_VSCROLL ((LONG)0xFFFFFFFB)
+#define OBJID_CLIENT ((LONG)0xFFFFFFFC)
+#define STATE_SYSTEM_UNAVAILABLE 0x00000001
+#define STATE_SYSTEM_PRESSED 0x00000008
+#define STATE_SYSTEM_INVISIBLE 0x00008000
+#define STATE_SYSTEM_OFFSCREEN 0x00010000
 #define SIF_RANGE 0x0001
 #define SIF_PAGE 0x0002
 #define SIF_POS 0x0004

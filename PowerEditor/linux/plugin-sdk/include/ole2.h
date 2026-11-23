@@ -14,6 +14,21 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-// Notepad++ Linux plugin SDK: part of <windows.h>.
+// Notepad++ Linux plugin SDK: OLE functions (Win32/Ole.cpp).
+
 #pragma once
 #include <windows.h>
+#include <objidl.h>
+#include <oleidl.h>
+
+#ifndef RC_INVOKED
+HRESULT OleInitialize(LPVOID reserved);
+void OleUninitialize();
+HRESULT RegisterDragDrop(HWND hwnd, IDropTarget* target);
+HRESULT RevokeDragDrop(HWND hwnd);
+HRESULT DoDragDrop(IDataObject* data, IDropSource* source, DWORD okEffects, DWORD* effect);
+HRESULT OleSetClipboard(IDataObject* data);
+HRESULT OleGetClipboard(IDataObject** data);
+HRESULT OleFlushClipboard();
+HRESULT OleIsCurrentClipboard(IDataObject* data);
+#endif

@@ -58,7 +58,7 @@ Not implemented (greyed out in the menus):
   menu item are set in the Main menu tab (Windows lists them in both).
 - **Translations:** the menus are translated (`nativeLang` files); the dialogs are English only.
 - **Settings files:** `session.xml`, `langs.xml`, `stylers.xml` and themes use the
-  Windows format. Other settings live in `~/.config/notepad++/config.ini`
+  Windows format. Other settings live in `~/.config/linuxpad++/config.ini`
   (QSettings), so the Windows `config.xml` is not read; of `shortcuts.xml` the
   `<Macros>`, `<UserDefinedCommands>` and `<ScintillaKeys>` parts are used (the menu
   shortcuts of the Main menu tab are in config.ini). `contextMenu.xml` works like on Windows.
@@ -70,7 +70,7 @@ Not implemented (greyed out in the menus):
 
 All 24 pages are there (`src/Preferences.cpp`) with the Windows options, and like
 Notepad++ every change applies at once (the dialog only has Close). Settings are
-stored in `~/.config/notepad++/config.ini`; the keys of older port versions are
+stored in `~/.config/linuxpad++/config.ini`; the keys of older port versions are
 migrated. Checked by the `[preferences]` part of the self test (one check per
 area, screenshots of every page).
 
@@ -142,7 +142,7 @@ container), opened from View or the toolbar, remembered at exit (and in
   map shows the document of a hovered tab.
 - **Function List** (`src/FunctionParser.cpp` is the Windows functionParser.cpp,
   `src/FunctionList.cpp` the panel): the shipped `functionList/*.xml` rules and
-  `overrideMap.xml`; a user `~/.config/notepad++/functionList/` folder comes first.
+  `overrideMap.xml`; a user `~/.config/linuxpad++/functionList/` folder comes first.
   Class nodes, search filter, sort (and "sort by default" in its menu), reload,
   the entry of the caret is selected, double click / Enter goes to the function.
   Parsed again on document switch, language change and after saving (like
@@ -186,7 +186,7 @@ so the other view of a clone and a document shown again restore the hidden lines
 
 Macro > Save Current Recorded Macro... asks for a name and a shortcut (Ctrl / Alt
 / Shift + key, the Windows Shortcut dialog) and stores the macro in `<Macros>` of
-`~/.config/notepad++/shortcuts.xml`, in the Windows format (Action types 0, 1 and
+`~/.config/linuxpad++/shortcuts.xml`, in the Windows format (Action types 0, 1 and
 2, Windows key codes), so the macros of a Windows `shortcuts.xml` work when the
 file is copied there; the other parts of the file are kept. Without the file the
 default "Trim Trailing Space and Save" (Alt+Shift+S) is there, as in Notepad++.
@@ -203,7 +203,7 @@ port converts it with its own table (`src/FileIO.cpp`).
 ## Editor context menu from contextMenu.xml: done (2026-11-20)
 
 The right click menu of the editor is built from `<ScintillaContextMenu>` of
-`~/.config/notepad++/contextMenu.xml`, or from the default of Notepad++
+`~/.config/linuxpad++/contextMenu.xml`, or from the default of Notepad++
 (CONTEXTMENU_XML_CONTENT of NppConstants.h, extracted at build time): `id`,
 `MenuEntryName` + `MenuItemName` (English menu names), `ItemNameAs`, `FolderName`
 (with `TranslateID`), `id="0"` separators; plugin items are skipped. Settings >

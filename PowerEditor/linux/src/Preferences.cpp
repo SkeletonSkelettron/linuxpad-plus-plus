@@ -118,7 +118,7 @@ namespace
 		return groups;
 	}
 
-	const QString kDesktopFile = QStringLiteral("notepad-plus-plus.desktop");
+	const QString kDesktopFile = QStringLiteral("linuxpad-plus-plus.desktop");
 
 	QString mimeAppsPath()
 	{
@@ -134,7 +134,7 @@ namespace
 		const QList<QMimeType> types = db.mimeTypesForFileName(QStringLiteral("x") + ext);
 		*custom = types.isEmpty();
 		if (types.isEmpty())
-			return QStringLiteral("application/x-notepad-plus-plus-%1").arg(ext.mid(1).toLower());
+			return QStringLiteral("application/x-linuxpad-plus-plus-%1").arg(ext.mid(1).toLower());
 		return types.first().name();
 	}
 
@@ -174,7 +174,7 @@ namespace
 			QString data = QStandardPaths::writableLocation(QStandardPaths::GenericDataLocation);
 			const QString pkgDir = data + QStringLiteral("/mime/packages");
 			QDir().mkpath(pkgDir);
-			QFile pkg(pkgDir + QStringLiteral("/notepad-plus-plus-%1.xml").arg(ext.mid(1).toLower()));
+			QFile pkg(pkgDir + QStringLiteral("/linuxpad-plus-plus-%1.xml").arg(ext.mid(1).toLower()));
 			if (!pkg.open(QIODevice::WriteOnly | QIODevice::Truncate))
 			{
 				*error = pkg.errorString();
@@ -450,7 +450,7 @@ void preferences(MainWindow* mw)
 		});
 		return b;
 	};
-	const QString needRestart = QStringLiteral("(Need to restart Notepad++)");
+	const QString needRestart = QStringLiteral("(Need to restart LinuxPad++)");
 
 	// =====================================================================
 	// General
@@ -983,7 +983,7 @@ void preferences(MainWindow* mw)
 	// =====================================================================
 	{
 		QVBoxLayout* page = addPage(QStringLiteral("File Association"), QStringLiteral("FileAssoc"));
-		page->addWidget(label(QStringLiteral("Make Notepad++ the default application of these file types for your user "
+		page->addWidget(label(QStringLiteral("Make LinuxPad++ the default application of these file types for your user "
 		                                     "(xdg-mime, ~/.config/mimeapps.list).")));
 		auto* groupsList = new QListWidget;
 		for (const ExtGroup& g : extGroups())
@@ -1569,7 +1569,7 @@ void preferences(MainWindow* mw)
 		row->addLayout(leftCol, 1);
 		row->addWidget(group(QStringLiteral("Panel State and [-nosession] *"), panelBox), 0, Qt::AlignTop);
 		page->addLayout(row);
-		page->addWidget(new QLabel(QStringLiteral("* The modification of this setting needs to restart Notepad++")));
+		page->addWidget(new QLabel(QStringLiteral("* The modification of this setting needs to restart LinuxPad++")));
 		page->addStretch(1);
 	}
 
@@ -1652,7 +1652,7 @@ void preferences(MainWindow* mw)
 		QRadioButton* noCloud = radio(clouds, QStringLiteral("No Cloud"), 0);
 		QRadioButton* withCloud = radio(clouds, QStringLiteral("Set your cloud location path here:"), 1);
 		auto* path = new QLineEdit(cloudPath);
-		QPushButton* browse = browseDir(path, QStringLiteral("Select a folder from/to where Notepad++ reads/writes its settings"));
+		QPushButton* browse = browseDir(path, QStringLiteral("Select a folder from/to where LinuxPad++ reads/writes its settings"));
 		auto* warning = new QLabel;
 		warning->setWordWrap(true);
 		(cloudPath.isEmpty() ? noCloud : withCloud)->setChecked(true);
@@ -1662,7 +1662,7 @@ void preferences(MainWindow* mw)
 			if (!withCloud->isChecked() || path->text().trimmed().isEmpty())
 			{
 				QFile::remove(choice);
-				warning->setText(withCloud->isChecked() ? QString() : QStringLiteral("Please restart Notepad++ to take effect."));
+				warning->setText(withCloud->isChecked() ? QString() : QStringLiteral("Please restart LinuxPad++ to take effect."));
 				return;
 			}
 			const QString dir = path->text().trimmed();
@@ -1683,7 +1683,7 @@ void preferences(MainWindow* mw)
 				if (QFileInfo::exists(src) && !QFileInfo::exists(dst))
 					QFile::copy(src, dst);
 			}
-			warning->setText(QStringLiteral("Please restart Notepad++ to take effect."));
+			warning->setText(QStringLiteral("Please restart LinuxPad++ to take effect."));
 			Q_UNUSED(dlg);
 		};
 		QObject::connect(clouds, &QButtonGroup::idToggled, &dlg, [applyCloud](int, bool on) { if (on) applyCloud(); });

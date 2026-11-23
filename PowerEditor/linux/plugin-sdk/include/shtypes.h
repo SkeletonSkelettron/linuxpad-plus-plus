@@ -17,3 +17,12 @@
 // Notepad++ Linux plugin SDK: part of <windows.h>.
 #pragma once
 #include <windows.h>
+
+#ifndef NPP_COMDLG_FILTERSPEC_DEFINED
+#define NPP_COMDLG_FILTERSPEC_DEFINED
+struct COMDLG_FILTERSPEC
+{
+	LPCWSTR pszName;
+	LPCWSTR pszSpec; // "*.txt;*.log"
+};
+#endif

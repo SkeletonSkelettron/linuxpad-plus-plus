@@ -136,7 +136,7 @@ enum SystrayAction { SYSTRAY_NONE = 0, SYSTRAY_MINIMIZE = 1, SYSTRAY_CLOSE = 2, 
 enum SearchEngineChoice { SE_CUSTOM = 0, SE_DUCKDUCKGO = 1, SE_GOOGLE = 2, SE_BING = 3, SE_YAHOO = 4, SE_STACKOVERFLOW = 5 };
 
 // Every persisted preference: X(type, name, default value).
-// Stored in ~/.config/notepad++/config.ini under the same names.
+// Stored in ~/.config/linuxpad++/config.ini under the same names.
 #define NPP_PREF_FIELDS(X) \
 	/* View menu */ \
 	X(bool, wordWrap, false) \
@@ -377,7 +377,7 @@ struct LangTabSetting
 	bool backspaceUnindent = false;
 };
 
-// User preferences, persisted in ~/.config/notepad++/config.ini
+// User preferences, persisted in ~/.config/linuxpad++/config.ini
 struct NppPrefs
 {
 #define NPP_PREF_DECLARE(type, name, def) type name = def;
@@ -410,15 +410,15 @@ namespace Npp
 {
 	NppPrefs& prefs();
 	FindState& findState();
-	QString dataDir();   // <prefix>/share/notepad++
-	QString configDir(); // ~/.config/notepad++
-	QString backupDir(); // ~/.config/notepad++/backup
-	QString localConfigDir(); // ~/.config/notepad++, even when the settings are on a cloud folder
-	QString cloudChoiceFile(); // ~/.config/notepad++/cloud/choice, like Notepad++
+	QString dataDir();   // <prefix>/share/linuxpad++
+	QString configDir(); // ~/.config/linuxpad++ (the settings of ~/.config/notepad++ are copied there once)
+	QString backupDir(); // ~/.config/linuxpad++/backup
+	QString localConfigDir(); // ~/.config/linuxpad++, even when the settings are on a cloud folder
+	QString cloudChoiceFile(); // ~/.config/linuxpad++/cloud/choice, like Notepad++
 	void beep(); // QApplication::beep() unless "Mute all sounds"
 	QString windowsDateTimeFormat(const QString& fmt); // Windows date/time picture ("tt": AM/PM) to Qt
 	QString version();   // e.g. "8.9.9"
-	QString appName();   // "Notepad++"
+	QString appName();   // "LinuxPad++"
 	bool isDarkDesktop();
 	QString stripAmpersand(const QString& s);
 }

@@ -1,11 +1,11 @@
-id: io.github.SkeletonSkelettron.NotepadPlusPlus
+id: io.github.SkeletonSkelettron.LinuxPadPlusPlus
 branch: stable
 runtime: org.kde.Platform
 runtime-version: '6.10'
 sdk: org.kde.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.dotnet10
-command: notepad++
+command: linuxpad++
 finish-args:
   - --share=ipc
   - --socket=wayland
@@ -18,21 +18,24 @@ build-options:
 cleanup:
   - /lib/dotnet/shared/Microsoft.AspNetCore.App
 modules:
-  - name: notepad-plus-plus
+  - name: linuxpad-plus-plus
     buildsystem: simple
     build-commands:
       - /usr/lib/sdk/dotnet10/bin/dotnet --list-sdks
       - cmake -S PowerEditor/linux -B _build -G Ninja -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/app -DNPP_BUILD_TESTS=ON
       - cmake --build _build --parallel "$FLATPAK_BUILDER_N_JOBS"
       - cmake --install _build
-      - test -f /app/lib/notepad++/plugins/JsonTools/JsonToolsEngine.dll
+      - test -f /app/lib/linuxpad++/plugins/JsonTools/JsonToolsEngine.dll
       - /usr/lib/sdk/dotnet10/bin/install.sh
       - >-
         sed -e "s|^Icon=.*|Icon=${FLATPAK_ID}|"
-        /app/share/applications/notepad-plus-plus.desktop
+        /app/share/applications/linuxpad-plus-plus.desktop
         > "/app/share/applications/${FLATPAK_ID}.desktop"
-      - rm /app/share/applications/notepad-plus-plus.desktop
-      - install -Dm644 "PowerEditor/linux/flatpak/${FLATPAK_ID}.png" "/app/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png"
+      - rm /app/share/applications/linuxpad-plus-plus.desktop
+      - >-
+        for s in 16 24 32 48 64 128 256 512; do
+        mv "/app/share/icons/hicolor/${s}x${s}/apps/linuxpad-plus-plus.png" "/app/share/icons/hicolor/${s}x${s}/apps/${FLATPAK_ID}.png";
+        done
       - install -Dm644 "PowerEditor/linux/flatpak/${FLATPAK_ID}.metainfo.xml" "/app/share/metainfo/${FLATPAK_ID}.metainfo.xml"
       - install -Dm644 /usr/lib/sdk/dotnet10/lib/LICENSE.txt "/app/share/licenses/${FLATPAK_ID}/dotnet-LICENSE.txt"
       - install -Dm644 /usr/lib/sdk/dotnet10/lib/ThirdPartyNotices.txt "/app/share/licenses/${FLATPAK_ID}/dotnet-ThirdPartyNotices.txt"

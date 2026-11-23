@@ -23,10 +23,13 @@
 #include <QHeaderView>
 #include <QHelpEvent>
 #include <QKeyEvent>
+#include <QKeySequence>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMouseEvent>
 #include <QProgressBar>
 #include <QRegularExpression>
+#include <QScrollBar>
 #include <QSlider>
 #include <QStyledItemDelegate>
 #include <QTabBar>
@@ -53,6 +56,7 @@ namespace w32
 		{
 			case Kind::ListView: case Kind::TreeView: case Kind::Tab: case Kind::Trackbar: case Kind::UpDown:
 			case Kind::Progress: case Kind::Tooltip: case Kind::Link: case Kind::Header: case Kind::StatusBar:
+			case Kind::HotKey: case Kind::Toolbar: case Kind::Rebar:
 				return true;
 			default:
 				return false;
@@ -80,6 +84,7 @@ namespace w32
 			Window* header = nullptr;
 			QColor textColor;
 			QColor bkColor;
+			int columns = 0; // list views: columns inserted (a QTreeWidget always has one)
 		};
 
 		ViewData* viewData(Window* w)
@@ -155,6 +160,23 @@ namespace w32
 		};
 
 		// ---- list view -------------------------------------------------------------------
+		// text of a cell: callback cells (LPSTR_TEXTCALLBACK, LVS_OWNERDATA) ask LVN_GETDISPINFO, like Windows
+		QString lvCellText(Window* w, QTreeWidget* t, QTreeWidgetItem* item, int sub)
+		{
+			if (!item->data(sub, RoleCallback).toBool())
+				return item->text(sub);
+			wchar_t buf[1024] = {};
+			NMLVDISPINFOW di{};
+			di.item.mask = LVIF_TEXT;
+			di.item.iItem = t->indexOfTopLevelItem(item);
+			di.item.iSubItem = sub;
+			di.item.pszText = buf;
+			di.item.cchTextMax = 1024;
+			di.item.lParam = static_cast<LPARAM>(item->data(0, RoleParam).toLongLong());
+			notify(w, &di.hdr, LVN_GETDISPINFOW);
+			return qs(di.item.pszText ? di.item.pszText : buf);
+		}
+
 		void lvUpdateIcon(Window* w, QTreeWidgetItem* item)
 		{
 			const int image = item->data(0, RoleImage).toInt();
@@ -301,9 +323,11 @@ namespace w32
 				case LVM_SETITEMCOUNT:
 					while (t->topLevelItemCount() < static_cast<int>(wParam))
 					{
+						// LVS_OWNERDATA: the texts and the icon come from LVN_GETDISPINFO
 						auto* item = new QTreeWidgetItem;
 						for (int c = 0; c < std::max(1, t->columnCount()); ++c)
 							item->setData(c, RoleCallback, true);
+						item->setData(0, RoleImageCallback, true);
 						t->addTopLevelItem(item);
 					}
 					while (t->topLevelItemCount() > static_cast<int>(wParam))
@@ -312,14 +336,26 @@ namespace w32
 				case LVM_INSERTCOLUMNW:
 				{
 					const auto* col = reinterpret_cast<const LVCOLUMNW*>(lParam);
+					const QString text = (col && (col->mask & LVCF_TEXT)) ? qs(col->pszText) : QString();
+					int at = 0;
+					if (d->columns == 0)
+					{
+						// the first column: the one the QTreeWidget has already
+						d->columns = 1;
+						t->setColumnCount(1);
+						t->setHeaderLabels({text});
+					}
+					else
+					{
 					const int n = t->columnCount();
-					int at = std::clamp(static_cast<int>(wParam), 0, n);
+					at = std::clamp(static_cast<int>(wParam), 0, n);
 					QStringList labels;
 					for (int c = 0; c < n; ++c)
 						labels << t->headerItem()->text(c);
 					// QTreeWidget adds columns at the end: move the texts of the columns after
 					t->setColumnCount(n + 1);
-					labels.insert(at, (col && (col->mask & LVCF_TEXT)) ? qs(col->pszText) : QString());
+					++d->columns;
+					labels.insert(at, text);
 					t->setHeaderLabels(labels);
 					if (at < n)
 					{
@@ -330,6 +366,13 @@ namespace w32
 								item->setText(c, item->text(c - 1));
 							item->setText(at, QString());
 						}
+					}
+					}
+					// LVS_OWNERDATA: the new column asks for its texts too
+					if (w->style & LVS_OWNERDATA)
+					{
+						for (int i = 0; i < t->topLevelItemCount(); ++i)
+							t->topLevelItem(i)->setData(at, RoleCallback, true);
 					}
 					if (col && (col->mask & LVCF_WIDTH))
 						t->setColumnWidth(at, std::max(col->cx, 0));
@@ -371,8 +414,16 @@ namespace w32
 				{
 					const int c = static_cast<int>(wParam);
 					const int n = t->columnCount();
-					if (c < 0 || c >= n)
+					if (c < 0 || c >= n || d->columns == 0)
 						return FALSE;
+					if (--d->columns == 0)
+					{
+						// no column left: the one of the QTreeWidget stays, without text
+						t->setHeaderLabels({QString()});
+						for (int i = 0; i < t->topLevelItemCount(); ++i)
+							t->topLevelItem(i)->setText(0, QString());
+						return TRUE;
+					}
 					QStringList labels;
 					for (int k = 0; k < n; ++k)
 					{
@@ -523,7 +574,7 @@ namespace w32
 					else
 					{
 						if (lv->mask & LVIF_TEXT)
-							copyOut(item->text(sub), lv->pszText, lv->cchTextMax);
+							copyOut(lvCellText(w, t, item, sub), lv->pszText, lv->cchTextMax);
 						if (lv->mask & LVIF_PARAM)
 							lv->lParam = static_cast<LPARAM>(item->data(0, RoleParam).toLongLong());
 						if (lv->mask & LVIF_IMAGE)
@@ -552,7 +603,7 @@ namespace w32
 					QTreeWidgetItem* item = lvItem(w, static_cast<int>(wParam));
 					if (!item || !lv)
 						return 0;
-					return copyOut(item->text(lv->iSubItem), lv->pszText, lv->cchTextMax);
+					return copyOut(lvCellText(w, t, item, lv->iSubItem), lv->pszText, lv->cchTextMax);
 				}
 				case LVM_SETITEMSTATE:
 				{
@@ -792,6 +843,20 @@ namespace w32
 				{
 					QTreeWidgetItem* item = lvItem(w, static_cast<int>(wParam));
 					return (item && t->viewport()->rect().intersects(t->visualItemRect(item))) ? TRUE : FALSE;
+				}
+				case LVM_SCROLL:
+				{
+					// dx, dy in pixels (report view: dy rounded to whole items by Windows; pixels here)
+					if (QScrollBar* sb = t->verticalScrollBar(); sb && lParam)
+					{
+						const int row = std::max(1, t->visualItemRect(t->topLevelItem(0)).height());
+						sb->setValue(sb->value() + (t->verticalScrollMode() == QAbstractItemView::ScrollPerItem
+							? static_cast<int>(lParam) / row + (static_cast<int>(lParam) % row != 0 ? (lParam > 0 ? 1 : -1) : 0)
+							: static_cast<int>(lParam)));
+					}
+					if (QScrollBar* sb = t->horizontalScrollBar(); sb && wParam)
+						sb->setValue(sb->value() + static_cast<int>(static_cast<intptr_t>(wParam)));
+					return TRUE;
 				}
 				case LVM_SETCALLBACKMASK:
 				case LVM_ARRANGE:
@@ -1421,6 +1486,46 @@ namespace w32
 						}
 						if (me->button() == Qt::LeftButton && !item && _w->kind == Kind::ListView)
 							lvItemActivate(_w, nullptr, 0, NM_CLICK);
+						// LVN_BEGINDRAG / TVN_BEGINDRAG when the mouse moves far enough with the button down
+						_pressed = item && (me->button() == Qt::LeftButton || me->button() == Qt::RightButton);
+						_pressButton = me->button();
+						_pressPos = me->position().toPoint();
+					}
+					else if (e->type() == QEvent::MouseMove && _pressed)
+					{
+						auto* me = static_cast<QMouseEvent*>(e);
+						if (!(me->buttons() & _pressButton))
+							_pressed = false;
+						else if ((me->position().toPoint() - _pressPos).manhattanLength() >= QApplication::startDragDistance()
+							&& !(_w->kind == Kind::TreeView && (_w->style & TVS_DISABLEDRAGDROP)))
+						{
+							// the item under the press (looked up again: the list may have changed since)
+							QTreeWidgetItem* item = t->itemAt(_pressPos);
+							_pressed = false;
+							if (!item)
+								return false;
+							const bool right = _pressButton == Qt::RightButton;
+							const QPoint p = t->viewport()->mapTo(t, _pressPos);
+							dragDone() = false;
+							if (_w->kind == Kind::ListView)
+							{
+								NMLISTVIEW nm{};
+								nm.iItem = t->indexOfTopLevelItem(item);
+								nm.ptAction = POINT{p.x(), p.y()};
+								notify(_w, &nm.hdr, right ? LVN_BEGINRDRAG : LVN_BEGINDRAG);
+							}
+							else
+							{
+								NMTREEVIEWW nm{};
+								tvFill(_w, item, nm.itemNew);
+								nm.itemNew.mask = TVIF_HANDLE | TVIF_PARAM | TVIF_STATE;
+								nm.ptDrag = POINT{p.x(), p.y()};
+								notify(_w, &nm.hdr, right ? TVN_BEGINRDRAGW : TVN_BEGINDRAGW);
+							}
+							// a drag ran (DoDragDrop): the button was released during it
+							if (dragDone())
+								return true;
+						}
 					}
 					else if (e->type() == QEvent::MouseButtonRelease)
 					{
@@ -1488,14 +1593,45 @@ namespace w32
 		private:
 			Window* _w;
 			QTreeWidgetItem* _rightItem = nullptr;
+			bool _pressed = false;
+			Qt::MouseButton _pressButton = Qt::NoButton;
+			QPoint _pressPos;
 		};
 
 		// ---- tab control -----------------------------------------------------------------
 		struct TabData
 		{
 			QTabBar* bar = nullptr;
+			QFrame* frame = nullptr;
 			HIMAGELIST images = nullptr;
 			bool silent = false;
+		};
+
+		void layoutTab(TabData* d, QWidget* box)
+		{
+			if (!d->bar || !d->frame)
+				return;
+			const int h = d->bar->count() ? d->bar->sizeHint().height() : 0;
+			d->bar->setGeometry(0, 0, box->width(), h);
+			d->frame->setGeometry(0, h, box->width(), std::max(0, box->height() - h));
+		}
+
+		class TabBoxFilter : public QObject
+		{
+		public:
+			TabBoxFilter(TabData* d, QWidget* box) : QObject(box), _d(d), _box(box) {}
+			bool eventFilter(QObject* obj, QEvent* e) override
+			{
+				// LayoutRequest: a child without a layout changed its size hint (tabs added, font)
+				if (obj == _box && (e->type() == QEvent::Resize || e->type() == QEvent::LayoutRequest || e->type() == QEvent::Show
+					|| e->type() == QEvent::FontChange))
+					layoutTab(_d, _box);
+				return false;
+			}
+
+		private:
+			TabData* _d;
+			QWidget* _box;
 		};
 
 		LRESULT tabProc(Window* w, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1520,6 +1656,7 @@ namespace w32
 					if ((ti->mask & TCIF_IMAGE) && d->images)
 						bar->setTabIcon(at, imageAt(d->images, ti->iImage));
 					d->silent = false;
+					layoutTab(d, w->widget); // the rectangles of the tabs are asked right after
 					return at;
 				}
 				case TCM_SETITEMW:
@@ -1551,12 +1688,14 @@ namespace w32
 					d->silent = true;
 					bar->removeTab(static_cast<int>(wParam));
 					d->silent = false;
+					layoutTab(d, w->widget);
 					return TRUE;
 				case TCM_DELETEALLITEMS:
 					d->silent = true;
 					while (bar->count())
 						bar->removeTab(0);
 					d->silent = false;
+					layoutTab(d, w->widget);
 					return TRUE;
 				case TCM_GETCURSEL:
 				case TCM_GETCURFOCUS:
@@ -1951,6 +2090,63 @@ namespace w32
 			}
 		}
 
+		// ---- msctls_hotkey32 -------------------------------------------------------------------
+		QString hotKeyText(int value)
+		{
+			const int vk = LOBYTE(value);
+			const int mods = HIBYTE(value);
+			if (!vk)
+				return QCoreApplication::translate("HotKey", "None");
+			QString text;
+			if (mods & HOTKEYF_CONTROL)
+				text += QStringLiteral("Ctrl + ");
+			if (mods & HOTKEYF_SHIFT)
+				text += QStringLiteral("Shift + ");
+			if (mods & HOTKEYF_ALT)
+				text += QStringLiteral("Alt + ");
+			if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z'))
+				text += QChar(vk);
+			else
+				text += QKeySequence(qtKeyFromVk(vk)).toString(QKeySequence::NativeText);
+			return text;
+		}
+
+		class HotKeyFilter : public QObject
+		{
+		public:
+			HotKeyFilter(Window* w, QObject* parent) : QObject(parent), _w(w) {}
+			bool eventFilter(QObject* obj, QEvent* e) override
+			{
+				if (e->type() != QEvent::KeyPress)
+					return QObject::eventFilter(obj, e);
+				auto* k = static_cast<QKeyEvent*>(e);
+				const int key = k->key();
+				if (key == Qt::Key_Tab || key == Qt::Key_Backtab)
+					return false; // focus moves on, like Windows
+				if (key == Qt::Key_Control || key == Qt::Key_Shift || key == Qt::Key_Alt || key == Qt::Key_Meta)
+					return true;
+				int mods = 0;
+				if (k->modifiers() & Qt::ControlModifier)
+					mods |= HOTKEYF_CONTROL;
+				if (k->modifiers() & Qt::ShiftModifier)
+					mods |= HOTKEYF_SHIFT;
+				if (k->modifiers() & Qt::AltModifier)
+					mods |= HOTKEYF_ALT;
+				int value = 0;
+				// Backspace and Delete alone clear it
+				if (mods || (key != Qt::Key_Backspace && key != Qt::Key_Delete))
+					value = MAKEWORD(vkFromQt(key, k->nativeVirtualKey()), mods);
+				_w->checkState = value;
+				if (auto* edit = qobject_cast<QLineEdit*>(obj))
+					edit->setText(hotKeyText(value));
+				notifyCommand(_w, EN_CHANGE);
+				return true;
+			}
+
+		private:
+			Window* _w;
+		};
+
 		// ---- SysLink -------------------------------------------------------------------------
 		QString linkMarkup(const QString& text)
 		{
@@ -2126,14 +2322,12 @@ namespace w32
 				d->bar->setDrawBase(true);
 				d->bar->setExpanding(false);
 				d->bar->setUsesScrollButtons(true);
-				auto* frame = new QFrame(box);
-				frame->setFrameShape(QFrame::StyledPanel);
-				auto* layout = new QVBoxLayout(box);
-				layout->setContentsMargins(0, 0, 0, 0);
-				layout->setSpacing(0);
-				layout->addWidget(d->bar);
-				layout->addWidget(frame, 1);
-				frame->lower();
+				d->frame = new QFrame(box);
+				d->frame->setFrameShape(QFrame::StyledPanel);
+				d->frame->lower();
+				// the tab row at the top, the frame of the pages below it: placed here, not by a QLayout (whose
+				// cached size of the bar stays 0 when the tabs come after the first layout)
+				box->installEventFilter(new TabBoxFilter(d, box));
 				w->widget = box;
 				QObject::connect(d->bar, &QTabBar::currentChanged, box, [w, d](int)
 				{
@@ -2230,6 +2424,23 @@ namespace w32
 				}
 				break;
 			}
+			case Kind::Toolbar:
+				setupToolbar(w);
+				break;
+			case Kind::Rebar:
+				setupRebar(w);
+				break;
+			case Kind::HotKey:
+			{
+				// msctls_hotkey32: the key pressed in it with Ctrl, Shift and Alt, MAKEWORD(vk, HOTKEYF_*)
+				auto* edit = new QLineEdit(parent);
+				edit->setReadOnly(true);
+				edit->setText(hotKeyText(0));
+				edit->setContextMenuPolicy(Qt::NoContextMenu);
+				edit->installEventFilter(new HotKeyFilter(w, edit));
+				w->widget = edit;
+				break;
+			}
 			case Kind::Progress:
 			{
 				auto* p = new QProgressBar(parent);
@@ -2302,6 +2513,10 @@ namespace w32
 				return upDownProc(w, msg, wParam, lParam);
 			case Kind::Tooltip:
 				return tooltipProc(w, msg, wParam, lParam);
+			case Kind::Toolbar:
+				return toolbarProc(w, msg, wParam, lParam);
+			case Kind::Rebar:
+				return rebarProc(w, msg, wParam, lParam);
 			case Kind::Trackbar:
 				if (auto* s = qobject_cast<QSlider*>(w->widget))
 				{
@@ -2322,6 +2537,24 @@ namespace w32
 						case TBM_SETTICFREQ: s->setTickInterval(static_cast<int>(wParam)); return 0;
 						case TBM_CLEARTICS: case TBM_SETTIC: case TBM_SETSEL: return TRUE;
 						default: break;
+					}
+				}
+				return -0x7FFFFFFF;
+			case Kind::HotKey:
+				if (auto* edit = qobject_cast<QLineEdit*>(w->widget))
+				{
+					switch (msg)
+					{
+						case HKM_SETHOTKEY:
+							w->checkState = static_cast<int>(wParam & 0xFFFF);
+							edit->setText(hotKeyText(w->checkState));
+							return 0;
+						case HKM_GETHOTKEY:
+							return w->checkState;
+						case HKM_SETRULES:
+							return 0;
+						default:
+							break;
 					}
 				}
 				return -0x7FFFFFFF;
@@ -2388,7 +2621,11 @@ namespace w32
 				if (!t)
 					return -0x7FFFFFFF;
 				if (msg == HDM_GETITEMCOUNT)
-					return t->columnCount();
+				{
+					// the header of a list view: the columns inserted
+					Window* list = win(w->parent);
+					return (list && list->kind == Kind::ListView && viewData(list)) ? viewData(list)->columns : t->columnCount();
+				}
 				if (msg == HDM_GETITEMRECT)
 				{
 					auto* rc = reinterpret_cast<RECT*>(lParam);
@@ -2397,6 +2634,57 @@ namespace w32
 					const int c = static_cast<int>(wParam);
 					const int x = t->header()->sectionViewportPosition(c);
 					*rc = RECT{x, 0, x + t->columnWidth(c), t->header()->height()};
+					return TRUE;
+				}
+				if (msg == HDM_GETITEMW || msg == HDM_SETITEMW)
+				{
+					auto* hi = reinterpret_cast<HDITEMW*>(lParam);
+					const int c = static_cast<int>(wParam);
+					if (!hi || c < 0 || c >= t->columnCount())
+						return FALSE;
+					QHeaderView* h = t->header();
+					if (msg == HDM_GETITEMW)
+					{
+						if (hi->mask & HDI_WIDTH)
+							hi->cxy = t->columnWidth(c);
+						if ((hi->mask & HDI_TEXT) && hi->pszText)
+							copyOut(t->headerItem()->text(c), hi->pszText, hi->cchTextMax);
+						if (hi->mask & HDI_FORMAT)
+						{
+							const Qt::Alignment a = Qt::Alignment(t->headerItem()->textAlignment(c));
+							hi->fmt = HDF_STRING | ((a & Qt::AlignRight) ? HDF_RIGHT : (a & Qt::AlignHCenter) ? HDF_CENTER : HDF_LEFT);
+							if (h->isSortIndicatorShown() && h->sortIndicatorSection() == c)
+								hi->fmt |= h->sortIndicatorOrder() == Qt::AscendingOrder ? HDF_SORTUP : HDF_SORTDOWN;
+						}
+						if (hi->mask & HDI_ORDER)
+							hi->iOrder = h->visualIndex(c);
+						if (hi->mask & HDI_LPARAM)
+							hi->lParam = t->headerItem()->data(c, Qt::UserRole + 1).value<qlonglong>();
+						return TRUE;
+					}
+					if (hi->mask & HDI_WIDTH)
+						t->setColumnWidth(c, hi->cxy);
+					if (hi->mask & HDI_TEXT)
+						t->headerItem()->setText(c, hi->pszText ? qs(hi->pszText) : QString());
+					if (hi->mask & HDI_LPARAM)
+						t->headerItem()->setData(c, Qt::UserRole + 1, QVariant::fromValue<qlonglong>(hi->lParam));
+					if (hi->mask & HDI_FORMAT)
+					{
+						const int just = hi->fmt & HDF_JUSTIFYMASK;
+						t->headerItem()->setTextAlignment(c, (just == HDF_RIGHT ? Qt::AlignRight : just == HDF_CENTER ? Qt::AlignHCenter : Qt::AlignLeft) | Qt::AlignVCenter);
+						// the sort arrows (HDF_SORTUP / HDF_SORTDOWN; a bitmap of an arrow: the arrow of Qt)
+						const bool up = (hi->fmt & HDF_SORTUP) != 0;
+						const bool down = (hi->fmt & HDF_SORTDOWN) != 0;
+						if (up || down)
+						{
+							h->setSortIndicatorShown(true);
+							h->setSortIndicator(c, up ? Qt::AscendingOrder : Qt::DescendingOrder);
+						}
+						else if (h->sortIndicatorSection() == c)
+							h->setSortIndicatorShown(false);
+					}
+					if ((hi->mask & HDI_ORDER) && hi->iOrder >= 0 && hi->iOrder < t->columnCount())
+						h->moveSection(h->visualIndex(c), hi->iOrder);
 					return TRUE;
 				}
 				return -0x7FFFFFFF;
@@ -2544,6 +2832,16 @@ BOOL ImageList_GetIconSize(HIMAGELIST il, int* cx, int* cy)
 		*cx = il->cx;
 	if (cy)
 		*cy = il->cy;
+	return TRUE;
+}
+
+// the images are icons, not a strip of a bitmap: rcImage is the size of the image, without bitmaps
+BOOL ImageList_GetImageInfo(HIMAGELIST il, int index, IMAGEINFO* info)
+{
+	if (!il || !info || index < 0 || index >= static_cast<int>(il->icons.size()))
+		return FALSE;
+	*info = IMAGEINFO{};
+	info->rcImage = RECT{0, 0, il->cx, il->cy};
 	return TRUE;
 }
 

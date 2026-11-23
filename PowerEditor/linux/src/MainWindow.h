@@ -307,7 +307,8 @@ private:
 	void viewFullScreen(bool postIt);
 	void encodingSet(int id);
 	void encodingConvert(int id);
-	void languageSet(LangType lang, const QString& udlName = QString());
+	void languageSet(LangType lang, const QString& udlName = QString()); // udlName: the UDL of L_USER, the lexer of L_EXTERNAL
+	void addExternalLexerMenu(); // the lexers of the lexer plugins in the Language menu
 	void rebuildUdlMenu();                       // the User Defined Languages at the end of the Language menu
 	void showUdlDialog();                        // Language > User Defined Language > Define your language...
 	void udlChanged(const QString& name);        // the documents in this language are styled again ("" = User-Defined)
@@ -390,6 +391,7 @@ private:
 	QString _toolbarIconKey;
 	QToolBar* _toolbar = nullptr;
 	QLabel* _sbLang = nullptr;
+	QString _sbLangKey; // buffer, language and message the language part shows (plugins set it in between)
 	QLabel* _sbDocInfo = nullptr;
 	QLabel* _sbPos = nullptr;
 	QLabel* _sbEol = nullptr;

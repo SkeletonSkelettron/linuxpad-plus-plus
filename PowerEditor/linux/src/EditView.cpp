@@ -360,7 +360,7 @@ void EditView::showMargin(int margin, bool show)
 void EditView::defineDocType(LangType lang, const QString& udlName)
 {
 	_lang = lang;
-	_udlName = (lang == L_USER) ? udlName : QString();
+	_udlName = (lang == L_USER || lang == L_EXTERNAL) ? udlName : QString();
 	StyleManager& sm = StyleManager::instance();
 	const UserLang* udl = nullptr;
 	if (lang == L_USER)
@@ -371,7 +371,7 @@ void EditView::defineDocType(LangType lang, const QString& udlName)
 			udl = &um.scratch(); // User-Defined: the language of the dialog
 	}
 	// Large File Restriction: no syntax highlighting (Buffer::isLargeFile)
-	sm.defineDocType(this, _largeFile ? L_TEXT : lang, udl, ex(SCI_GETDOCPOINTER));
+	sm.defineDocType(this, _largeFile ? L_TEXT : lang, udl, ex(SCI_GETDOCPOINTER), lang == L_EXTERNAL ? udlName : QString());
 	sm.performGlobalStyles(this);
 	if (_isMain)
 	{

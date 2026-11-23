@@ -16,6 +16,7 @@
 
 #include "LangStyles.h"
 
+#include <algorithm>
 #include <cstring>
 
 #include <QDir>
@@ -312,6 +313,131 @@ void StyleManager::loadLangs()
 	}
 }
 
+int StyleManager::addExternalLexer(const QString& name, ExternalLexer::CreateLexerFn createLexer)
+{
+	if (name.isEmpty() || !createLexer || externalLexerIndex(name) >= 0 || static_cast<int>(_externalLexers.size()) >= maxExternalLexers)
+		return -1;
+	ExternalLexer el;
+	el.name = name;
+	el.createLexer = createLexer;
+	el.def.name = name;
+	_externalLexers.push_back(std::move(el));
+	return static_cast<int>(_externalLexers.size()) - 1;
+}
+
+int StyleManager::externalLexerIndex(const QString& name) const
+{
+	for (size_t i = 0; i < _externalLexers.size(); ++i)
+	{
+		if (_externalLexers[i].name == name)
+			return static_cast<int>(i);
+	}
+	return -1;
+}
+
+bool StyleManager::loadExternalLexerConfig(const QString& xmlPath)
+{
+	// NppParameters::getExternalLexerFromXmlTree(): feedKeyWordsParameters() and feedStylerArray()
+	pugi::xml_document doc;
+	if (!doc.load_file(QFile::encodeName(xmlPath).constData(), pugi::parse_default & ~pugi::parse_wconv_attribute))
+		return false;
+	pugi::xml_node root = doc.child("NotepadPlus");
+	if (!root)
+		return false;
+	for (pugi::xml_node lang : root.child("Languages").children("Language"))
+	{
+		const int index = externalLexerIndex(QString::fromUtf8(lang.attribute("name").as_string()));
+		if (index < 0)
+			continue;
+		LangDef& d = _externalLexers[static_cast<size_t>(index)].def;
+		d.ext = QString::fromUtf8(lang.attribute("ext").as_string());
+		d.commentLine = QString::fromUtf8(lang.attribute("commentLine").as_string());
+		d.commentStart = QString::fromUtf8(lang.attribute("commentStart").as_string());
+		d.commentEnd = QString::fromUtf8(lang.attribute("commentEnd").as_string());
+		for (pugi::xml_node kw : lang.children("Keywords"))
+		{
+			const int idx = kwClassFromName(kw.attribute("name").as_string());
+			if (idx >= 0 && idx < NB_LIST)
+			{
+				d.keywords[idx] = kw.child_value();
+				d.hasKeywords[idx] = true;
+			}
+		}
+	}
+	for (pugi::xml_node lex : root.child("LexerStyles").children("LexerType"))
+	{
+		LexerStyler ls;
+		ls.lexerName = QString::fromUtf8(lex.attribute("name").as_string());
+		ls.lexerDesc = QString::fromUtf8(lex.attribute("desc").as_string());
+		ls.userExt = QString::fromUtf8(lex.attribute("ext").as_string());
+		for (pugi::xml_node ws : lex.children("WordsStyle"))
+		{
+			Style st;
+			readStyle(st, ws);
+			ls.styles.push_back(std::move(st));
+		}
+		auto same = [&ls](const LexerStyler& o) { return o.lexerName == ls.lexerName; };
+		_externalStylers.erase(std::remove_if(_externalStylers.begin(), _externalStylers.end(), same), _externalStylers.end());
+		_externalStylers.push_back(std::move(ls));
+	}
+	mergeExternalStylers();
+	return true;
+}
+
+void StyleManager::mergeExternalStylers()
+{
+	// a theme (or stylers.xml) may style a lexer plugin itself: its styles stay
+	for (const LexerStyler& ls : _externalStylers)
+	{
+		if (!lexerStylerByName(ls.lexerName))
+			_lexerStylers.push_back(ls);
+	}
+}
+
+void StyleManager::setExternalLexer(ScintillaEditBase* sci, const QString& name) const
+{
+	// ScintillaEditView::setExternalLexer(): the lexer of the plugin, the styles and keyword lists
+	// of its configuration
+	const int index = externalLexerIndex(name);
+	Scintilla::ILexer5* lexer = index >= 0 ? _externalLexers[static_cast<size_t>(index)].createLexer(name.toUtf8().constData()) : nullptr;
+	if (!lexer)
+	{
+		setLexerFromLangID(sci, L_TEXT);
+		return;
+	}
+	ex(sci, SCI_SETILEXER, 0, reinterpret_cast<sptr_t>(lexer));
+	const LangDef& def = _externalLexers[static_cast<size_t>(index)].def;
+	std::string keywords[NB_LIST];
+	bool hasKeywords[NB_LIST] = {};
+	for (int i = 0; i < NB_LIST; ++i)
+	{
+		keywords[i] = def.keywords[i];
+		hasKeywords[i] = def.hasKeywords[i];
+	}
+	if (const LexerStyler* styler = lexerStylerByName(name))
+	{
+		for (const Style& style : styler->styles)
+		{
+			setStyle(sci, style);
+			if (style.keywordClass >= 0 && style.keywordClass < NB_LIST)
+			{
+				// getCompleteKeywordList(): the words of the style, then the ones of the language
+				if (!style.keywords.empty())
+					keywords[style.keywordClass] = style.keywords + (keywords[style.keywordClass].empty() ? "" : " ") + keywords[style.keywordClass];
+				hasKeywords[style.keywordClass] = true;
+			}
+		}
+	}
+	for (int i = 0; i < NB_LIST; ++i)
+	{
+		if (hasKeywords[i])
+			ex(sci, SCI_SETKEYWORDS, i, reinterpret_cast<sptr_t>(keywords[i].c_str()));
+	}
+	prop(sci, "fold", "1");
+	prop(sci, "fold.compact", "0");
+	prop(sci, "fold.comment", "1");
+}
+
 QString StyleManager::defaultStylersPath() const
 {
 	const QString user = Npp::configDir() + QStringLiteral("/stylers.xml");
@@ -345,6 +471,7 @@ bool StyleManager::loadTheme(const QString& path)
 		_lexerStylers = std::move(modelLexers);
 		_themePath.clear();
 		_loadedStylersPath = modelPath;
+		mergeExternalStylers();
 		return true;
 	}
 
@@ -356,6 +483,7 @@ bool StyleManager::loadTheme(const QString& path)
 		_lexerStylers = std::move(modelLexers);
 		_themePath.clear();
 		_loadedStylersPath = modelPath;
+		mergeExternalStylers();
 		return false;
 	}
 
@@ -400,6 +528,7 @@ bool StyleManager::loadTheme(const QString& path)
 	_lexerStylers = std::move(themeLexers);
 	_themePath = path;
 	_loadedStylersPath = path;
+	mergeExternalStylers();
 	return true;
 }
 
@@ -486,7 +615,7 @@ int StyleManager::menuIdFromLang(LangType lang) const
 	return 0;
 }
 
-LangType StyleManager::langFromFileName(const QString& path) const
+LangType StyleManager::langFromFileName(const QString& path, QString* externalName) const
 {
 	const QFileInfo fi(path);
 	const QString name = fi.fileName();
@@ -510,11 +639,29 @@ LangType StyleManager::langFromFileName(const QString& path) const
 	if (ext.isEmpty())
 		return L_TEXT;
 
-	// user extensions from the styler, then langs.xml (scanned from the end like Notepad++)
+	// user extensions from the styler, then langs.xml (scanned from the end like Notepad++: the
+	// languages of the lexer plugins come after the ones of langs.xml)
 	for (const LexerStyler& ls : _lexerStylers)
 	{
 		if (isInList(ext, ls.userExt))
+		{
+			if (externalLexerIndex(ls.lexerName) >= 0)
+			{
+				if (externalName)
+					*externalName = ls.lexerName;
+				return L_EXTERNAL;
+			}
 			return langFromName(ls.lexerName);
+		}
+	}
+	for (auto it = _externalLexers.rbegin(); it != _externalLexers.rend(); ++it)
+	{
+		if (!it->def.ext.isEmpty() && isInList(ext, it->def.ext))
+		{
+			if (externalName)
+				*externalName = it->name;
+			return L_EXTERNAL;
+		}
 	}
 	for (int i = static_cast<int>(_langs.size()) - 1; i >= 0; --i)
 	{
@@ -1076,7 +1223,8 @@ static bool isPythonStyleIndentation(LangType typeDoc)
 		typeDoc == L_ASN1 || typeDoc == L_GDSCRIPT);
 }
 
-void StyleManager::defineDocType(ScintillaEditBase* sci, LangType typeDoc, const UserLang* udl, sptr_t bufferId) const
+void StyleManager::defineDocType(ScintillaEditBase* sci, LangType typeDoc, const UserLang* udl, sptr_t bufferId,
+	const QString& externalName) const
 {
 	const Style* pStyleDefault = _globalStyles.findByID(STYLE_DEFAULT);
 	if (pStyleDefault)
@@ -1326,6 +1474,10 @@ void StyleManager::defineDocType(ScintillaEditBase* sci, LangType typeDoc, const
 			ex(sci, SCI_STYLESETEOLFILLED, SCE_SEARCHRESULT_FILE_HEADER, true);
 			ex(sci, SCI_STYLESETEOLFILLED, SCE_SEARCHRESULT_SEARCH_HEADER, true);
 			setLexer(sci, L_SEARCHRESULT, LIST_NONE);
+			break;
+
+		case L_EXTERNAL:
+			setExternalLexer(sci, externalName);
 			break;
 
 		case L_USER:

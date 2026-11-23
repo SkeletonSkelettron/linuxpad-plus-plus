@@ -20,6 +20,7 @@
 #pragma once
 
 #include <windows.h>
+#include <cstring>
 
 #ifndef RC_INVOKED
 BOOL PathFileExistsW(LPCWSTR path);
@@ -57,6 +58,7 @@ BOOL PathCanonicalizeW(LPWSTR dst, LPCWSTR src);
 void PathQuoteSpacesW(LPWSTR path);
 void PathUnquoteSpacesW(LPWSTR path);
 BOOL PathMatchSpecW(LPCWSTR file, LPCWSTR spec);
+BOOL PathMatchSpecA(LPCSTR file, LPCSTR spec);
 BOOL PathCompactPathExW(LPWSTR out, LPCWSTR src, UINT max, DWORD flags);
 BOOL PathCompactPathW(HDC hdc, LPWSTR path, UINT width);
 int PathCommonPrefixW(LPCWSTR a, LPCWSTR b, LPWSTR out);
@@ -133,6 +135,28 @@ LPWSTR StrFormatByteSizeW(LONGLONG size, LPWSTR buffer, UINT max);
 LPWSTR StrPBrkW(LPCWSTR s, LPCWSTR set);
 int StrSpnW(LPCWSTR s, LPCWSTR set);
 int StrCSpnW(LPCWSTR s, LPCWSTR set);
+// the char versions (UTF-8 strings: bytes are compared, ASCII case folding)
+inline LPSTR StrChrA(LPCSTR s, WORD c) { return s ? const_cast<LPSTR>(strchr(s, static_cast<char>(c))) : nullptr; }
+inline LPSTR StrChrIA(LPCSTR s, WORD c)
+{
+	for (; s && *s; ++s)
+		if (tolower(static_cast<unsigned char>(*s)) == tolower(static_cast<unsigned char>(c)))
+			return const_cast<LPSTR>(s);
+	return nullptr;
+}
+inline LPSTR StrRChrA(LPCSTR s, LPCSTR end, WORD c)
+{
+	LPCSTR found = nullptr;
+	for (; s && *s && (!end || s < end); ++s)
+		if (*s == static_cast<char>(c))
+			found = s;
+	return const_cast<LPSTR>(found);
+}
+inline LPSTR StrStrA(LPCSTR s, LPCSTR find) { return (s && find) ? const_cast<LPSTR>(strstr(s, find)) : nullptr; }
+inline int StrCmpIA(LPCSTR a, LPCSTR b) { return strcasecmp(a, b); }
+inline int StrCmpNIA(LPCSTR a, LPCSTR b, int n) { return strncasecmp(a, b, static_cast<size_t>(n)); }
+inline int StrCmpNA(LPCSTR a, LPCSTR b, int n) { return strncmp(a, b, static_cast<size_t>(n)); }
+inline int StrToIntA(LPCSTR s) { return s ? atoi(s) : 0; }
 #define STIF_DEFAULT 0x00000000
 #define STIF_SUPPORT_HEX 0x00000001
 #define StrStrI StrStrIW

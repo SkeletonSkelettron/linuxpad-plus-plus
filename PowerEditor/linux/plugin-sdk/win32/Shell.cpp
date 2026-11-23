@@ -25,6 +25,7 @@
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QFontDialog>
+#include <QMessageBox>
 #include <QMimeDatabase>
 #include <QProcess>
 #include <QRegularExpression>
@@ -32,6 +33,7 @@
 #include <QUrl>
 
 #include <fnmatch.h>
+#include <map>
 
 #include "W32Internal.h"
 #include <shlwapi.h>
@@ -452,6 +454,15 @@ void PathUnquoteSpacesW(LPWSTR path)
 	}
 }
 
+BOOL PathMatchSpecA(LPCSTR file, LPCSTR spec)
+{
+	if (!file || !spec)
+		return FALSE;
+	const std::wstring f = ws(qsA(file));
+	const std::wstring s = ws(qsA(spec));
+	return PathMatchSpecW(f.c_str(), s.c_str());
+}
+
 BOOL PathMatchSpecW(LPCWSTR file, LPCWSTR spec)
 {
 	if (!file || !spec)
@@ -867,18 +878,80 @@ BOOL ShellExecuteExW(SHELLEXECUTEINFOW* info)
 	return ok ? TRUE : FALSE;
 }
 
+namespace
+{
+	// the "system image list" of Windows: one list (small, large) of the icons of the file types, filled when asked
+	struct SystemImages
+	{
+		HIMAGELIST list = nullptr;
+		std::map<QString, int> indexes; // key of the icon -> its index
+	};
+
+	SystemImages& systemImages(bool small)
+	{
+		static SystemImages lists[2];
+		SystemImages& s = lists[small ? 1 : 0];
+		if (!s.list)
+		{
+			const int size = small ? 16 : 32;
+			s.list = ImageList_Create(size, size, ILC_COLOR32 | ILC_MASK, 0, 64);
+		}
+		return s;
+	}
+
+	QIcon fileIcon(const QFileInfo& fi, bool useAttributes, bool open, QString* key)
+	{
+		static QFileIconProvider provider;
+		if (fi.isRoot())
+		{
+			*key = QStringLiteral("drive");
+			return provider.icon(QFileIconProvider::Drive);
+		}
+		if (fi.isDir() || (useAttributes && !fi.exists() && fi.suffix().isEmpty() && fi.fileName().isEmpty()))
+		{
+			*key = open ? QStringLiteral("folder-open") : QStringLiteral("folder");
+			const QIcon theme = QIcon::fromTheme(*key);
+			return !theme.isNull() ? theme : provider.icon(QFileIconProvider::Folder);
+		}
+		static QMimeDatabase mimes;
+		const QMimeType mime = useAttributes && !fi.exists() ? mimes.mimeTypeForFile(fi.fileName(), QMimeDatabase::MatchExtension) : mimes.mimeTypeForFile(fi);
+		*key = mime.name();
+		QIcon icon = QIcon::fromTheme(mime.iconName());
+		if (icon.isNull())
+			icon = QIcon::fromTheme(mime.genericIconName());
+		if (icon.isNull())
+			icon = provider.icon(QFileIconProvider::File);
+		return icon;
+	}
+}
+
 DWORD_PTR SHGetFileInfoW(LPCWSTR path, DWORD, SHFILEINFOW* info, UINT, UINT flags)
 {
 	if (!info)
 		return 0;
 	*info = SHFILEINFOW{};
 	const QString p = nativePath(path);
-	const QFileInfo fi(p);
+	const QFileInfo fi(p.isEmpty() ? QStringLiteral("/") : p);
+	const bool useAttributes = (flags & SHGFI_USEFILEATTRIBUTES) != 0;
 	static QFileIconProvider provider;
-	if (flags & SHGFI_ICON)
+	if (flags & (SHGFI_ICON | SHGFI_SYSICONINDEX))
 	{
-		QIcon icon = (flags & SHGFI_USEFILEATTRIBUTES) && !fi.exists() ? provider.icon(QFileIconProvider::File) : provider.icon(fi);
-		info->hIcon = iconHandle(icon);
+		QString key;
+		const QIcon icon = fileIcon(fi, useAttributes, (flags & SHGFI_OPENICON) != 0, &key);
+		if (flags & SHGFI_ICON)
+			info->hIcon = iconHandle(icon);
+		if (flags & SHGFI_SYSICONINDEX)
+		{
+			SystemImages& images = systemImages((flags & SHGFI_SMALLICON) != 0);
+			auto it = images.indexes.find(key);
+			if (it == images.indexes.end())
+			{
+				HICON h = iconHandle(icon);
+				it = images.indexes.emplace(key, ImageList_AddIcon(images.list, h)).first;
+				DestroyIcon(h);
+			}
+			info->iIcon = it->second; // no overlay (SHGFI_OVERLAYINDEX: the bits 24..31 stay 0)
+		}
 	}
 	if (flags & SHGFI_DISPLAYNAME)
 		copyOut(fi.fileName().isEmpty() ? p : fi.fileName(), info->szDisplayName, MAX_PATH);
@@ -886,36 +959,140 @@ DWORD_PTR SHGetFileInfoW(LPCWSTR path, DWORD, SHFILEINFOW* info, UINT, UINT flag
 		copyOut(fi.isDir() ? QStringLiteral("File folder") : QMimeDatabase().mimeTypeForFile(fi).comment(), info->szTypeName, 80);
 	if (flags & SHGFI_ATTRIBUTES)
 		info->dwAttributes = fi.isDir() ? 0x20000000 : 0; // SFGAO_FOLDER
+	// SHGFI_SYSICONINDEX returns the image list (not to be destroyed)
+	if (flags & SHGFI_SYSICONINDEX)
+		return reinterpret_cast<DWORD_PTR>(systemImages((flags & SHGFI_SMALLICON) != 0).list);
 	return 1;
+}
+
+namespace
+{
+	bool copyRecursively(const QString& from, const QString& to)
+	{
+		const QFileInfo fi(from);
+		if (fi.isSymLink())
+			return QFile::link(fi.symLinkTarget(), to);
+		if (!fi.isDir())
+			return QFile::copy(from, to);
+		// a folder into itself: never
+		if (QDir::cleanPath(to).startsWith(QDir::cleanPath(from) + QLatin1Char('/')))
+			return false;
+		if (!QDir().mkpath(to))
+			return false;
+		bool ok = true;
+		for (const QFileInfo& child : QDir(from).entryInfoList(QDir::AllEntries | QDir::Hidden | QDir::System | QDir::NoDotAndDotDot))
+			ok = copyRecursively(child.filePath(), to + QLatin1Char('/') + child.fileName()) && ok;
+		return ok;
+	}
+
+	// "name (2).ext": a name that is not used
+	QString uniqueName(const QString& path)
+	{
+		const QFileInfo fi(path);
+		const QString dir = fi.path();
+		const bool folder = fi.isDir();
+		const QString base = folder ? fi.fileName() : fi.completeBaseName();
+		const QString ext = folder || fi.suffix().isEmpty() ? QString() : QLatin1Char('.') + fi.suffix();
+		for (int n = 2;; ++n)
+		{
+			const QString candidate = QStringLiteral("%1/%2 (%3)%4").arg(dir, base).arg(n).arg(ext);
+			if (!QFileInfo::exists(candidate))
+				return candidate;
+		}
+	}
+
+	bool removePath(const QString& path)
+	{
+		const QFileInfo fi(path);
+		return (fi.isDir() && !fi.isSymLink()) ? QDir(path).removeRecursively() : QFile::remove(path);
+	}
 }
 
 int SHFileOperationW(SHFILEOPSTRUCTW* op)
 {
-	if (!op || !op->pFrom)
+	if (!op || !op->pFrom || !*op->pFrom)
 		return 1;
+	if (op->wFunc == FO_DELETE && !(op->fFlags & FOF_NOCONFIRMATION))
+	{
+		const bool trash = op->fFlags & FOF_ALLOWUNDO;
+		const QString question = trash ? QStringLiteral("Move the selected items to the trash?")
+			: QStringLiteral("Permanently delete the selected items?");
+		if (QMessageBox::question(widgetOf(op->hwnd), QStringLiteral("Delete"), question,
+			QMessageBox::Yes | QMessageBox::No, QMessageBox::No) != QMessageBox::Yes)
+		{
+			op->fAnyOperationsAborted = TRUE;
+			return 1;
+		}
+	}
 	int failed = 0;
-	for (const wchar_t* f = op->pFrom; *f; f += std::wcslen(f) + 1)
+	// pTo: one folder for all, or one name per file (FOF_MULTIDESTFILES)
+	QStringList targets;
+	if (op->fFlags & FOF_MULTIDESTFILES)
+	{
+		for (const wchar_t* t = op->pTo; t && *t; t += std::wcslen(t) + 1)
+			targets << nativePath(t);
+	}
+	else if (op->pTo && *op->pTo)
+		targets << nativePath(op->pTo);
+	int index = 0;
+	for (const wchar_t* f = op->pFrom; *f; f += std::wcslen(f) + 1, ++index)
 	{
 		const QString from = nativePath(f);
+		if (from.isEmpty() || QDir(from).isRoot())
+		{
+			++failed;
+			continue;
+		}
 		switch (op->wFunc)
 		{
 			case FO_DELETE:
 				if (op->fFlags & FOF_ALLOWUNDO)
 					failed += QFile::moveToTrash(from) ? 0 : 1;
-				else if (QFileInfo(from).isDir())
-					failed += QDir(from).removeRecursively() ? 0 : 1;
 				else
-					failed += QFile::remove(from) ? 0 : 1;
+					failed += removePath(from) ? 0 : 1;
 				break;
 			case FO_COPY:
 			case FO_MOVE:
 			case FO_RENAME:
 			{
-				QString to = nativePath(op->pTo);
-				if (QFileInfo(to).isDir())
+				QString to = targets.value(targets.size() > 1 ? index : 0);
+				if (to.isEmpty())
+				{
+					++failed;
+					break;
+				}
+				if (op->wFunc != FO_RENAME && QFileInfo(to).isDir() && targets.size() <= 1)
 					to += QLatin1Char('/') + QFileInfo(from).fileName();
+				if (QDir::cleanPath(to) == QDir::cleanPath(from))
+				{
+					// copied onto itself: a copy beside it (Windows: "- Copy"), moved onto itself: nothing to do
+					if (op->wFunc != FO_COPY)
+						break;
+					to = uniqueName(to);
+				}
+				else if (QFileInfo::exists(to) || QFileInfo(to).isSymLink())
+				{
+					if (op->fFlags & FOF_RENAMEONCOLLISION)
+						to = uniqueName(to);
+					else
+					{
+						const bool replace = (op->fFlags & FOF_NOCONFIRMATION)
+							|| QMessageBox::question(widgetOf(op->hwnd), QStringLiteral("Replace"),
+								QStringLiteral("\"%1\" exists already. Replace it?").arg(to)) == QMessageBox::Yes;
+						if (!replace || !removePath(to))
+						{
+							++failed;
+							break;
+						}
+					}
+				}
 				if (op->wFunc == FO_COPY)
-					failed += QFile::copy(from, to) ? 0 : 1;
+					failed += copyRecursively(from, to) ? 0 : 1;
+				else if (QFileInfo(from).isDir() && !QFileInfo(from).isSymLink())
+				{
+					// folders: renamed, or copied then removed (other file system)
+					failed += (QDir().rename(from, to) || (copyRecursively(from, to) && removePath(from))) ? 0 : 1;
+				}
 				else
 					failed += QFile::rename(from, to) ? 0 : 1;
 				break;
@@ -924,6 +1101,8 @@ int SHFileOperationW(SHFILEOPSTRUCTW* op)
 				break;
 		}
 	}
+	if (failed)
+		op->fAnyOperationsAborted = TRUE;
 	return failed ? 1 : 0;
 }
 
@@ -970,6 +1149,23 @@ namespace
 			default: return QDir::homePath();
 		}
 	}
+}
+
+HRESULT SHGetFolderLocation(HWND hWnd, int csidl, HANDLE token, DWORD, LPITEMIDLIST* pidl)
+{
+	if (!pidl)
+		return E_INVALIDARG;
+	*pidl = nullptr;
+	wchar_t path[MAX_PATH] = {};
+	const HRESULT hr = SHGetFolderPathW(hWnd, csidl, token, 0, path);
+	if (FAILED(hr))
+		return hr;
+	return SHILCreateFromPath(path, pidl, nullptr);
+}
+
+HRESULT SHGetMalloc(LPMALLOC* malloc)
+{
+	return CoGetMalloc(1, malloc);
 }
 
 HRESULT SHGetFolderPathW(HWND, int csidl, HANDLE, DWORD, LPWSTR path)

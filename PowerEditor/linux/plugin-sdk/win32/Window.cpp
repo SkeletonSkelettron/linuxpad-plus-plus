@@ -18,6 +18,8 @@
 // a Window record; its messages go through the subclasses and the window procedure,
 // and the events of Qt become the messages of Windows.
 
+#include <set>
+
 #include <QAbstractScrollArea>
 #include <QApplication>
 #include <QCloseEvent>
@@ -30,17 +32,23 @@
 #include <QEventLoop>
 #include <QGuiApplication>
 #include <QKeyEvent>
+#include <QLineEdit>
+#include <QPlainTextEdit>
 #include <QMenu>
 #include <QMimeData>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
 #include <QScreen>
+#include <QScrollBar>
+#include <QThread>
 #include <QTimer>
 #include <QUrl>
 #include <QWheelEvent>
 
 #include "W32Internal.h"
+#include <shlobj.h>
+#include <richedit.h>
 
 namespace w32
 {
@@ -87,11 +95,6 @@ namespace w32
 		HCURSOR g_cursor = nullptr;
 		HWND g_capture = nullptr;
 
-		struct DropFiles
-		{
-			QStringList files;
-			POINT pt{};
-		};
 	}
 
 	// procedures of the windows made here: GWLP_WNDPROC gives them, CallWindowProc takes them
@@ -625,6 +628,11 @@ namespace w32
 				case QEvent::Resize:
 				{
 					const QSize s = static_cast<QResizeEvent*>(e)->size();
+					// the resize of the first show of a dialog: Windows has sent WM_SIZE before the
+					// controls were made (plugins lay them out from their size at WM_INITDIALOG)
+					if (s == w->lastSize)
+						return true;
+					w->lastSize = s;
 					WPARAM type = SIZE_RESTORED;
 					if (isMinimized())
 						type = SIZE_MINIMIZED;
@@ -669,13 +677,14 @@ namespace w32
 					if (w->exStyle & WS_EX_ACCEPTFILES)
 					{
 						auto* de = static_cast<QDropEvent*>(e);
-						auto* drop = new DropFiles;
+						QStringList files;
 						for (const QUrl& u : de->mimeData()->urls())
 						{
 							if (u.isLocalFile())
-								drop->files << u.toLocalFile();
+								files << u.toLocalFile();
 						}
-						drop->pt = POINT{de->position().toPoint().x(), de->position().toPoint().y()};
+						// HDROP: a DROPFILES like the one of Windows (DragQueryFile, also of CF_HDROP)
+						HGLOBAL drop = makeDropFiles(files, POINT{de->position().toPoint().x(), de->position().toPoint().y()});
 						dispatch(w, WM_DROPFILES, reinterpret_cast<WPARAM>(drop), 0);
 						de->acceptProposedAction();
 						return true;
@@ -749,6 +758,9 @@ namespace w32
 			if (!w || w->destroyed)
 				return false;
 			const bool hooked = !w->subclasses.empty() || w->wndProc != controlWndProc;
+			// rich edits: EN_MSGFILTER of ENM_KEYEVENTS and ENM_MOUSEEVENTS, before the procedures
+			if (w->kind == Kind::Edit && (w->eventMask & (ENM_KEYEVENTS | ENM_MOUSEEVENTS)) && richEditFilter(w, obj, e))
+				return true;
 			switch (e->type())
 			{
 				case QEvent::KeyPress:
@@ -816,7 +828,27 @@ namespace w32
 	}
 }
 
+namespace w32
+{
+	bool isGuiThread()
+	{
+		return !qApp || QThread::currentThread() == qApp->thread();
+	}
+}
+
 using namespace w32;
+
+bool npp_isGuiThread()
+{
+	return isGuiThread();
+}
+
+LRESULT npp_sendFromThread(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
+{
+	LRESULT r = 0;
+	QMetaObject::invokeMethod(qApp, [&] { r = hWnd->send(hWnd, msg, wParam, lParam); }, Qt::BlockingQueuedConnection);
+	return r;
+}
 
 // ---- messages ------------------------------------------------------------------------------
 LRESULT SendMessageA(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
@@ -1119,6 +1151,8 @@ HWND CreateWindowExW(DWORD exStyle, LPCWSTR className, LPCWSTR windowName, DWORD
 		return nullptr;
 	if (style & WS_VISIBLE)
 		widget->show();
+	else if (!widget->isWindow())
+		widget->hide(); // explicitly: Qt shows the children of a parent that is shown later, Windows does not
 	return h;
 }
 
@@ -1132,6 +1166,8 @@ HWND CreateWindowExA(DWORD exStyle, LPCSTR className, LPCSTR windowName, DWORD s
 
 BOOL DestroyWindow(HWND hWnd)
 {
+	if (!isGuiThread())
+		return onGui([=] { return DestroyWindow(hWnd); });
 	Window* w = win(hWnd);
 	if (!w || w->destroyed)
 		return FALSE;
@@ -1181,6 +1217,8 @@ BOOL IsChild(HWND parent, HWND hWnd)
 
 BOOL ShowWindow(HWND hWnd, int cmd)
 {
+	if (!isGuiThread())
+		return onGui([=] { return ShowWindow(hWnd, cmd); });
 	QWidget* w = widgetOf(hWnd);
 	if (!w)
 		return FALSE;
@@ -1227,6 +1265,8 @@ BOOL ShowWindowAsync(HWND hWnd, int cmd)
 
 BOOL EnableWindow(HWND hWnd, BOOL enable)
 {
+	if (!isGuiThread())
+		return onGui([=] { return EnableWindow(hWnd, enable); });
 	QWidget* w = widgetOf(hWnd);
 	if (!w)
 		return FALSE;
@@ -1237,6 +1277,8 @@ BOOL EnableWindow(HWND hWnd, BOOL enable)
 
 BOOL UpdateWindow(HWND hWnd)
 {
+	if (!isGuiThread())
+		return onGui([=] { return UpdateWindow(hWnd); });
 	if (QWidget* w = widgetOf(hWnd))
 		w->repaint();
 	return TRUE;
@@ -1244,6 +1286,8 @@ BOOL UpdateWindow(HWND hWnd)
 
 BOOL InvalidateRect(HWND hWnd, const RECT* rc, BOOL)
 {
+	if (!isGuiThread())
+		return onGui([=] { return InvalidateRect(hWnd, rc, TRUE); });
 	QWidget* w = widgetOf(hWnd);
 	if (!w)
 		return FALSE;
@@ -1270,6 +1314,8 @@ BOOL InvalidateRgn(HWND hWnd, HRGN, BOOL erase)
 
 BOOL RedrawWindow(HWND hWnd, const RECT* rc, HRGN, UINT flags)
 {
+	if (!isGuiThread())
+		return onGui([=] { return RedrawWindow(hWnd, rc, nullptr, flags); });
 	QWidget* w = widgetOf(hWnd);
 	if (!w)
 		return FALSE;
@@ -1285,8 +1331,22 @@ BOOL RedrawWindow(HWND hWnd, const RECT* rc, HRGN, UINT flags)
 	return TRUE;
 }
 
+namespace
+{
+	// rebars and toolbars without CCS_NORESIZE keep the height of their content (Windows: "auto height")
+	int ownHeight(HWND hWnd, int height)
+	{
+		Window* w = win(hWnd);
+		if (!w || !w->widget || (w->kind != Kind::Rebar && w->kind != Kind::Toolbar) || (w->style & CCS_NORESIZE))
+			return height;
+		return std::max(w->widget->sizeHint().height(), w->widget->minimumHeight());
+	}
+}
+
 BOOL MoveWindow(HWND hWnd, int x, int y, int width, int height, BOOL)
 {
+	if (!isGuiThread())
+		return onGui([=] { return MoveWindow(hWnd, x, y, width, height, TRUE); });
 	QWidget* w = widgetOf(hWnd);
 	if (!w)
 		return FALSE;
@@ -1297,20 +1357,22 @@ BOOL MoveWindow(HWND hWnd, int x, int y, int width, int height, BOOL)
 	}
 	else
 	{
-		w->setGeometry(x, y, std::max(width, 0), std::max(height, 0));
+		w->setGeometry(x, y, std::max(width, 0), std::max(ownHeight(hWnd, height), 0));
 	}
 	return TRUE;
 }
 
 BOOL SetWindowPos(HWND hWnd, HWND insertAfter, int x, int y, int cx, int cy, UINT flags)
 {
+	if (!isGuiThread())
+		return onGui([=] { return SetWindowPos(hWnd, insertAfter, x, y, cx, cy, flags); });
 	QWidget* w = widgetOf(hWnd);
 	if (!w)
 		return FALSE;
 	if (!(flags & SWP_NOMOVE))
 		w->move(x, y);
 	if (!(flags & SWP_NOSIZE))
-		w->resize(std::max(cx, 0), std::max(cy, 0));
+		w->resize(std::max(cx, 0), std::max(ownHeight(hWnd, cy), 0));
 	if (!(flags & SWP_NOZORDER))
 	{
 		if (insertAfter == HWND_TOPMOST || insertAfter == HWND_NOTOPMOST)
@@ -1581,6 +1643,41 @@ HWND SetActiveWindow(HWND hWnd)
 	return old;
 }
 
+BOOL GetGUIThreadInfo(DWORD, PGUITHREADINFO info)
+{
+	if (!info)
+		return FALSE;
+	const DWORD size = info->cbSize;
+	*info = GUITHREADINFO{};
+	info->cbSize = size;
+	info->hwndActive = GetActiveWindow();
+	info->hwndFocus = GetFocus();
+	info->hwndCaret = info->hwndFocus;
+	POINT p{};
+	if (GetCaretPos(&p))
+		info->rcCaret = RECT{p.x, p.y, p.x + 1, p.y + 16};
+	return TRUE;
+}
+
+BOOL GetCaretPos(LPPOINT point)
+{
+	// the caret of the focused text box, in its client coordinates
+	if (!point)
+		return FALSE;
+	*point = POINT{};
+	QWidget* f = QApplication::focusWidget();
+	QRect r;
+	if (auto* pe = qobject_cast<QPlainTextEdit*>(f))
+		r = pe->cursorRect().translated(pe->viewport()->mapTo(pe, QPoint()));
+	else if (auto* le = qobject_cast<QLineEdit*>(f))
+		r = le->inputMethodQuery(Qt::ImCursorRectangle).toRect();
+	else
+		return FALSE;
+	point->x = r.left();
+	point->y = r.top();
+	return TRUE;
+}
+
 HWND GetFocus()
 {
 	for (QWidget* w = QApplication::focusWidget(); w; w = w->parentWidget())
@@ -1597,6 +1694,8 @@ HWND GetFocus()
 
 HWND SetFocus(HWND hWnd)
 {
+	if (!isGuiThread())
+		return onGui([=] { return SetFocus(hWnd); });
 	HWND old = GetFocus();
 	if (QWidget* w = widgetOf(hWnd))
 	{
@@ -1750,6 +1849,8 @@ DWORD GetWindowThreadProcessId(HWND, LPDWORD pid)
 
 BOOL SetWindowTextW(HWND hWnd, LPCWSTR text)
 {
+	if (!isGuiThread())
+		return onGui([=] { return SetWindowTextW(hWnd, text); });
 	if (win(hWnd))
 		return static_cast<BOOL>(SendMessageW(hWnd, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(text)));
 	if (QWidget* w = widgetOf(hWnd))
@@ -1800,9 +1901,249 @@ int GetClassNameW(HWND hWnd, LPWSTR name, int max)
 	return copyOut(cls, name, max);
 }
 
+// ---- subclasses of the windows of Notepad++ (main window, Scintilla views) --------------------
+namespace
+{
+	struct HostWindow;
+
+	// the key or mouse event being given to the procedures of a Scintilla view
+	struct HostEvent
+	{
+		QObject* target = nullptr;
+		QEvent* event = nullptr;
+		HostWindow* window = nullptr;
+		bool delivered = false;
+		bool hasText = false;
+	};
+	thread_local HostEvent* g_hostEvent = nullptr;
+
+	class HostFilter;
+
+	struct HostWindow
+	{
+		HWND h = nullptr;
+		WNDPROC proc = nullptr; // GWLP_WNDPROC, nullptr: the procedure of Notepad++
+		std::vector<Subclass> subclasses;
+		size_t depth = 0;
+		bool hooked = false;
+		HostFilter* filter = nullptr;
+		NppWndHook hook{};
+		bool passing = false; // an event given back to Scintilla
+	};
+
+	std::map<HWND, HostWindow*>& hostWindows()
+	{
+		static std::map<HWND, HostWindow*> w;
+		return w;
+	}
+
+	bool isHostHandle(HWND h)
+	{
+		return h && h->magic == NPP_HANDLE_MAGIC && !win(h) && (h->kind == NPP_HANDLE_NOTEPAD || h->kind == NPP_HANDLE_SCINTILLA);
+	}
+
+	void deliver(HostEvent* he)
+	{
+		if (!he || he->delivered || !he->target)
+			return;
+		he->delivered = true;
+		he->window->passing = true;
+		QCoreApplication::sendEvent(he->target, he->event);
+		he->window->passing = false;
+	}
+
+	LRESULT CALLBACK hostDefaultProc(HWND h, UINT msg, WPARAM wParam, LPARAM lParam)
+	{
+		// what Notepad++ does with the message: Scintilla gets the event, the main window the message
+		HostEvent* he = g_hostEvent;
+		if (he && he->window && he->window->h == h)
+		{
+			switch (msg)
+			{
+				case WM_KEYDOWN:
+				case WM_SYSKEYDOWN:
+					if (!he->hasText)
+						deliver(he);
+					return 0;
+				case WM_CHAR:
+				case WM_SYSCHAR:
+				case WM_KEYUP:
+				case WM_SYSKEYUP:
+				case WM_LBUTTONDOWN: case WM_LBUTTONUP: case WM_LBUTTONDBLCLK:
+				case WM_RBUTTONDOWN: case WM_RBUTTONUP: case WM_RBUTTONDBLCLK:
+				case WM_MBUTTONDOWN: case WM_MBUTTONUP: case WM_MBUTTONDBLCLK:
+				case WM_MOUSEMOVE: case WM_MOUSEWHEEL: case WM_MOUSEHWHEEL:
+					deliver(he);
+					return 0;
+				default:
+					break;
+			}
+		}
+		if (msg == WM_SETFOCUS || msg == WM_KILLFOCUS)
+			return 0;
+		if (h && h->send && h->kind == NPP_HANDLE_NOTEPAD)
+		{
+			// the procedure before this subclass: the next subclass of the main window, then Notepad++
+			NppWndMessage next{msg, wParam, lParam};
+			return h->send(h, NPPM_LINUX_CALLNEXT, reinterpret_cast<WPARAM>(&next), 0);
+		}
+		if (h && h->send)
+			return h->send(h, msg, wParam, lParam);
+		return 0;
+	}
+
+	LRESULT hostDispatch(HostWindow* hw, size_t level, UINT msg, WPARAM wParam, LPARAM lParam)
+	{
+		if (level < hw->subclasses.size())
+		{
+			const Subclass s = hw->subclasses[hw->subclasses.size() - 1 - level];
+			const size_t saved = hw->depth;
+			hw->depth = level;
+			const LRESULT r = s.proc(hw->h, msg, wParam, lParam, s.id, s.ref);
+			hw->depth = saved;
+			return r;
+		}
+		return (hw->proc ? hw->proc : hostDefaultProc)(hw->h, msg, wParam, lParam);
+	}
+
+	intptr_t nppHookDispatch(void* context, unsigned int msg, uintptr_t wParam, intptr_t lParam)
+	{
+		return hostDispatch(static_cast<HostWindow*>(context), 0, msg, wParam, lParam);
+	}
+
+	// key and mouse events of a Scintilla view as messages for the procedures of plugins
+	class HostFilter : public QObject
+	{
+	public:
+		explicit HostFilter(HostWindow* hw) : QObject(qApp), _hw(hw) {}
+
+		bool eventFilter(QObject* obj, QEvent* e) override
+		{
+			if (_hw->passing)
+				return false;
+			switch (e->type())
+			{
+				case QEvent::KeyPress:
+				case QEvent::KeyRelease:
+				{
+					auto* ke = static_cast<QKeyEvent*>(e);
+					const int vk = vkFromQt(ke->key(), ke->nativeVirtualKey());
+					const QString text = ke->text();
+					HostEvent he;
+					he.target = obj;
+					he.event = e;
+					he.window = _hw;
+					he.hasText = !text.isEmpty() && (text[0].isPrint() || text[0] == QLatin1Char('\t') || text[0] == QLatin1Char('\r')
+						|| text[0] == QLatin1Char('\b') || text[0] == QChar(27));
+					HostEvent* saved = g_hostEvent;
+					g_hostEvent = &he;
+					const bool alt = ke->modifiers() & Qt::AltModifier;
+					if (e->type() == QEvent::KeyPress)
+					{
+						if (vk)
+							hostDispatch(_hw, 0, alt ? WM_SYSKEYDOWN : WM_KEYDOWN, static_cast<WPARAM>(vk), keyLParam(ke->isAutoRepeat() ? 2 : 1, false, false));
+						if (he.hasText)
+						{
+							for (const QChar c : text)
+								hostDispatch(_hw, 0, alt ? WM_SYSCHAR : WM_CHAR, c.unicode(), keyLParam(1, false, false));
+						}
+						else if (!vk)
+							deliver(&he);
+					}
+					else
+					{
+						if (vk)
+							hostDispatch(_hw, 0, alt ? WM_SYSKEYUP : WM_KEYUP, static_cast<WPARAM>(vk), keyLParam(1, true, false));
+						else
+							deliver(&he);
+					}
+					g_hostEvent = saved;
+					return true; // given to Scintilla by hostDefaultProc, or kept by a plugin
+				}
+				case QEvent::MouseButtonPress:
+				case QEvent::MouseButtonRelease:
+				case QEvent::MouseButtonDblClick:
+				case QEvent::Wheel:
+				{
+					HostEvent he;
+					he.target = obj;
+					he.event = e;
+					he.window = _hw;
+					HostEvent* saved = g_hostEvent;
+					g_hostEvent = &he;
+					if (e->type() == QEvent::Wheel)
+					{
+						auto* we = static_cast<QWheelEvent*>(e);
+						const QPoint g = we->globalPosition().toPoint();
+						const int dy = we->angleDelta().y();
+						hostDispatch(_hw, 0, dy ? WM_MOUSEWHEEL : WM_MOUSEHWHEEL, MAKEWPARAM(mouseKeys(we->buttons(), we->modifiers()),
+							static_cast<short>(dy ? dy : -we->angleDelta().x())), pointParam(g));
+					}
+					else
+					{
+						auto* me = static_cast<QMouseEvent*>(e);
+						hostDispatch(_hw, 0, mouseMessage(me->type(), me->button()), mouseKeys(me->buttons() | me->button(), me->modifiers()),
+							pointParam(me->position().toPoint()));
+					}
+					g_hostEvent = saved;
+					return true;
+				}
+				case QEvent::FocusIn:
+					hostDispatch(_hw, 0, WM_SETFOCUS, 0, 0);
+					return false;
+				case QEvent::FocusOut:
+					hostDispatch(_hw, 0, WM_KILLFOCUS, 0, 0);
+					return false;
+				default:
+					return false;
+			}
+		}
+
+	private:
+		HostWindow* _hw;
+	};
+
+	HostWindow* hostWindow(HWND h)
+	{
+		auto& all = hostWindows();
+		auto it = all.find(h);
+		if (it != all.end())
+			return it->second;
+		auto* hw = new HostWindow;
+		hw->h = h;
+		all[h] = hw;
+		return hw;
+	}
+
+	void hookHost(HostWindow* hw)
+	{
+		if (hw->hooked)
+			return;
+		hw->hooked = true;
+		if (hw->h->kind == NPP_HANDLE_NOTEPAD)
+		{
+			hw->hook.dispatch = nppHookDispatch;
+			hw->hook.context = hw;
+			hw->h->send(hw->h, NPPM_LINUX_SUBCLASSNPP, reinterpret_cast<WPARAM>(&hw->hook), TRUE);
+		}
+		else if (auto* widget = static_cast<QWidget*>(hw->h->widget))
+		{
+			hw->filter = new HostFilter(hw);
+			widget->installEventFilter(hw->filter);
+			if (auto* area = qobject_cast<QAbstractScrollArea*>(widget))
+				area->viewport()->installEventFilter(hw->filter);
+		}
+	}
+}
+
 LONG_PTR GetWindowLongPtrW(HWND hWnd, int index)
 {
 	Window* w = win(hWnd);
+	if (!w && isHostHandle(hWnd) && index == GWLP_WNDPROC)
+	{
+		HostWindow* hw = hostWindow(hWnd);
+		return reinterpret_cast<LONG_PTR>(hw->proc ? hw->proc : hostDefaultProc);
+	}
 	if (!w)
 		return 0;
 	switch (index)
@@ -1847,6 +2188,16 @@ LONG_PTR GetWindowLongPtrW(HWND hWnd, int index)
 LONG_PTR SetWindowLongPtrW(HWND hWnd, int index, LONG_PTR value)
 {
 	Window* w = win(hWnd);
+	if (!w && isHostHandle(hWnd) && index == GWLP_WNDPROC)
+	{
+		// a plugin subclasses a window of Notepad++
+		HostWindow* hw = hostWindow(hWnd);
+		const LONG_PTR old = reinterpret_cast<LONG_PTR>(hw->proc ? hw->proc : hostDefaultProc);
+		auto proc = reinterpret_cast<WNDPROC>(value);
+		hw->proc = (proc == hostDefaultProc) ? nullptr : proc;
+		hookHost(hw);
+		return old;
+	}
 	if (!w)
 		return 0;
 	const LONG_PTR old = GetWindowLongPtrW(hWnd, index);
@@ -1990,6 +2341,8 @@ LRESULT CallWindowProcW(WNDPROC proc, HWND hWnd, UINT msg, WPARAM wParam, LPARAM
 		return proc(hWnd, msg, wParam, lParam);
 	if (Window* w = win(hWnd))
 		return defaultProc(w, msg, wParam, lParam);
+	if (isHostHandle(hWnd))
+		return hostDefaultProc(hWnd, msg, wParam, lParam);
 	return 0;
 }
 
@@ -2175,6 +2528,55 @@ BOOL FlashWindow(HWND hWnd, BOOL)
 	return TRUE;
 }
 
+BOOL FlashWindowEx(PFLASHWINFO info)
+{
+	if (!info || info->dwFlags == FLASHW_STOP)
+		return FALSE;
+	return FlashWindow(info->hwnd, TRUE);
+}
+
+UINT SendInput(UINT count, LPINPUT inputs, int size)
+{
+	if (!inputs || size != static_cast<int>(sizeof(INPUT)))
+	{
+		SetLastError(ERROR_INVALID_PARAMETER);
+		return 0;
+	}
+	UINT sent = 0;
+	for (UINT i = 0; i < count; ++i)
+	{
+		const INPUT& in = inputs[i];
+		if (in.type != INPUT_MOUSE)
+			break;
+		const DWORD f = in.mi.dwFlags;
+		const QPoint global = QCursor::pos();
+		struct Button { DWORD down, up; Qt::MouseButton button; };
+		for (const Button& b : {Button{MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP, Qt::LeftButton},
+			Button{MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, Qt::RightButton},
+			Button{MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, Qt::MiddleButton}})
+		{
+			if (!(f & (b.down | b.up)))
+				continue;
+			const bool down = (f & b.down) != 0;
+			const Qt::MouseButtons held = QGuiApplication::mouseButtons();
+			// a release of a button that is not held: nothing to release (like Windows, no effect)
+			if (!down && !(held & b.button))
+				continue;
+			QWidget* target = QWidget::mouseGrabber();
+			if (!target)
+				target = QApplication::widgetAt(global);
+			if (!target)
+				continue;
+			const QPointF local = target->mapFromGlobal(QPointF(global));
+			QMouseEvent e(down ? QEvent::MouseButtonPress : QEvent::MouseButtonRelease, local, QPointF(global), b.button,
+				down ? (held | b.button) : (held & ~b.button), QGuiApplication::keyboardModifiers());
+			QApplication::sendEvent(target, &e);
+		}
+		++sent;
+	}
+	return sent;
+}
+
 UINT GetDpiForWindow(HWND hWnd)
 {
 	QWidget* w = widgetOf(hWnd);
@@ -2249,6 +2651,28 @@ BOOL GetScrollInfo(HWND, int, LPSCROLLINFO si)
 	return FALSE;
 }
 
+// the scroll bars of a Qt scroll area (also the Scintilla of Notepad++)
+BOOL GetScrollBarInfo(HWND hWnd, LONG idObject, PSCROLLBARINFO info)
+{
+	if (!info || (idObject != OBJID_VSCROLL && idObject != OBJID_HSCROLL))
+		return FALSE;
+	const DWORD size = info->cbSize;
+	*info = SCROLLBARINFO{};
+	info->cbSize = size;
+	info->rgstate[0] = STATE_SYSTEM_INVISIBLE;
+	auto* area = qobject_cast<QAbstractScrollArea*>(w32::widgetOf(hWnd));
+	if (!area)
+		return TRUE;
+	QScrollBar* bar = idObject == OBJID_VSCROLL ? area->verticalScrollBar() : area->horizontalScrollBar();
+	if (!bar || !bar->isVisible())
+		return TRUE;
+	const QPoint topLeft = bar->mapToGlobal(QPoint(0, 0));
+	info->rcScrollBar = RECT{topLeft.x(), topLeft.y(), topLeft.x() + bar->width(), topLeft.y() + bar->height()};
+	info->dxyLineButton = 0;
+	info->rgstate[0] = bar->isEnabled() ? 0 : STATE_SYSTEM_UNAVAILABLE;
+	return TRUE;
+}
+
 int SetScrollPos(HWND, int, int pos, BOOL)
 {
 	return pos;
@@ -2290,62 +2714,74 @@ void DragAcceptFiles(HWND hWnd, BOOL accept)
 
 UINT DragQueryFileW(HDROP drop, UINT index, LPWSTR file, UINT max)
 {
-	auto* d = static_cast<DropFiles*>(drop);
-	if (!d)
+	if (!drop)
 		return 0;
+	const QStringList files = dropFilesList(drop);
 	if (index == 0xFFFFFFFF)
-		return static_cast<UINT>(d->files.size());
-	if (index >= static_cast<UINT>(d->files.size()))
+		return static_cast<UINT>(files.size());
+	if (index >= static_cast<UINT>(files.size()))
 		return 0;
-	const QString f = d->files[static_cast<int>(index)];
+	const QString f = files[static_cast<int>(index)];
 	if (!file)
 		return static_cast<UINT>(ws(f).size());
 	return static_cast<UINT>(copyOut(f, file, static_cast<int>(max)));
 }
 
+BOOL DragQueryPoint(HDROP drop, POINT* pt)
+{
+	const auto* df = static_cast<const DROPFILES*>(drop);
+	if (!df || !pt)
+		return FALSE;
+	*pt = df->pt;
+	return !df->fNC;
+}
+
 void DragFinish(HDROP drop)
 {
-	delete static_cast<DropFiles*>(drop);
+	GlobalFree(drop);
 }
 
 // ---- timers --------------------------------------------------------------------------------
+namespace
+{
+	// timers of the handles of the host (Notepad++ window, Scintilla views) and of no window (SetTimer(NULL)):
+	// not windows of the SDK, so the plugin keeps them, by handle and id like Windows
+	// Never destroyed: plugins kill their timers in the destructors of their global objects, at the exit of the
+	// process, after the destruction of the static objects made later (a static map would be gone by then).
+	std::map<std::pair<HWND, UINT_PTR>, QTimer*>& hostTimers()
+	{
+		static auto* timers = new std::map<std::pair<HWND, UINT_PTR>, QTimer*>;
+		return *timers;
+	}
+}
+
 UINT_PTR SetTimer(HWND hWnd, UINT_PTR id, UINT elapse, TIMERPROC proc)
 {
-	static std::map<UINT_PTR, QTimer*> threadTimers;
 	static UINT_PTR nextId = 0x7000;
 	Window* w = win(hWnd);
-	std::map<UINT_PTR, QTimer*>& timers = w ? w->timers : threadTimers;
-	if (!w && hWnd)
-	{
-		// a handle of the host: the timer lives in the plugin
-		if (!id)
-			id = ++nextId;
-	}
-	if (!w && !hWnd)
-		id = ++nextId;
-	QTimer*& t = timers[id];
+	if (!w && (!hWnd || !id))
+		id = ++nextId; // SetTimer(NULL, ...) gives the id of the timer
+	QTimer*& t = w ? w->timers[id] : hostTimers()[{hWnd, id}];
 	if (!t)
-	{
 		t = new QTimer;
-		const UINT_PTR timerId = id;
-		QObject::connect(t, &QTimer::timeout, [hWnd, timerId, proc]
-		{
-			const DWORD now = GetTickCount();
-			if (proc)
-				proc(hWnd, WM_TIMER, timerId, now);
-			else if (hWnd)
-				SendMessageW(hWnd, WM_TIMER, timerId, 0);
-		});
-	}
+	else
+		QObject::disconnect(t, &QTimer::timeout, nullptr, nullptr); // the same timer again: its new procedure, like Windows
+	const UINT_PTR timerId = id;
+	QObject::connect(t, &QTimer::timeout, [hWnd, timerId, proc]
+	{
+		const DWORD now = GetTickCount();
+		if (proc)
+			proc(hWnd, WM_TIMER, timerId, now);
+		else if (hWnd)
+			SendMessageW(hWnd, WM_TIMER, timerId, 0);
+	});
 	t->start(static_cast<int>(std::max<UINT>(elapse, 1)));
 	return id;
 }
 
 BOOL KillTimer(HWND hWnd, UINT_PTR id)
 {
-	Window* w = win(hWnd);
-	static std::map<UINT_PTR, QTimer*> none;
-	if (w)
+	if (Window* w = win(hWnd))
 	{
 		auto it = w->timers.find(id);
 		if (it == w->timers.end())
@@ -2355,11 +2791,40 @@ BOOL KillTimer(HWND hWnd, UINT_PTR id)
 		w->timers.erase(it);
 		return TRUE;
 	}
-	// timers of host handles and of no window: SetTimer keeps them in its own map
-	return FALSE;
+	auto it = hostTimers().find({hWnd, id});
+	if (it == hostTimers().end())
+		return FALSE;
+	if (QCoreApplication::instance()) // after the application (exit of the process): nothing runs any more
+	{
+		it->second->stop();
+		it->second->deleteLater();
+	}
+	hostTimers().erase(it);
+	return TRUE;
 }
 
 // ---- keyboard, mouse, cursor ---------------------------------------------------------------
+namespace
+{
+	// keys down now, for GetKeyState of other keys than the modifiers (keyboard hooks)
+	std::set<int>& keysDown()
+	{
+		static std::set<int> k;
+		return k;
+	}
+
+	void trackKey(QKeyEvent* ke)
+	{
+		const int vk = vkFromQt(ke->key(), ke->nativeVirtualKey());
+		if (!vk)
+			return;
+		if (ke->type() == QEvent::KeyPress)
+			keysDown().insert(vk);
+		else if (!ke->isAutoRepeat())
+			keysDown().erase(vk);
+	}
+}
+
 SHORT GetKeyState(int vk)
 {
 	const Qt::KeyboardModifiers m = QGuiApplication::queryKeyboardModifiers();
@@ -2374,7 +2839,7 @@ SHORT GetKeyState(int vk)
 		case VK_LBUTTON: down = b & Qt::LeftButton; break;
 		case VK_RBUTTON: down = b & Qt::RightButton; break;
 		case VK_MBUTTON: down = b & Qt::MiddleButton; break;
-		default: break;
+		default: down = keysDown().count(vk) != 0; break;
 	}
 	return down ? static_cast<SHORT>(0x8000) : 0;
 }
@@ -2392,6 +2857,11 @@ BOOL GetKeyboardState(PBYTE state)
 	for (int vk : {VK_SHIFT, VK_CONTROL, VK_MENU, VK_LBUTTON, VK_RBUTTON, VK_MBUTTON})
 	{
 		if (GetKeyState(vk) & 0x8000)
+			state[vk] = 0x80;
+	}
+	for (int vk : keysDown())
+	{
+		if (vk > 0 && vk < 256)
 			state[vk] = 0x80;
 	}
 	return TRUE;
@@ -2421,12 +2891,38 @@ UINT MapVirtualKeyW(UINT code, UINT mapType)
 
 SHORT VkKeyScanW(WCHAR ch)
 {
+	// the keys of a US keyboard: virtual key, 0x100 for Shift
 	const QChar c(static_cast<char16_t>(ch));
 	if (c.isLetter() && c.toUpper().unicode() < 128)
 		return static_cast<SHORT>(c.toUpper().unicode() | (c.isUpper() ? 0x100 : 0));
 	if (c.isDigit())
 		return static_cast<SHORT>(ch);
-	return static_cast<SHORT>(vkFromQt(ch));
+	static const struct { wchar_t ch; int vk; bool shift; } keys[] = {
+		{L' ', VK_SPACE, false}, {L'\t', VK_TAB, false}, {L'\r', VK_RETURN, false}, {L'\b', VK_BACK, false},
+		{L')', '0', true}, {L'!', '1', true}, {L'@', '2', true}, {L'#', '3', true}, {L'$', '4', true},
+		{L'%', '5', true}, {L'^', '6', true}, {L'&', '7', true}, {L'*', '8', true}, {L'(', '9', true},
+		{L';', VK_OEM_1, false}, {L':', VK_OEM_1, true}, {L'=', VK_OEM_PLUS, false}, {L'+', VK_OEM_PLUS, true},
+		{L',', VK_OEM_COMMA, false}, {L'<', VK_OEM_COMMA, true}, {L'-', VK_OEM_MINUS, false}, {L'_', VK_OEM_MINUS, true},
+		{L'.', VK_OEM_PERIOD, false}, {L'>', VK_OEM_PERIOD, true}, {L'/', VK_OEM_2, false}, {L'?', VK_OEM_2, true},
+		{L'`', VK_OEM_3, false}, {L'~', VK_OEM_3, true}, {L'[', VK_OEM_4, false}, {L'{', VK_OEM_4, true},
+		{L'\\', VK_OEM_5, false}, {L'|', VK_OEM_5, true}, {L']', VK_OEM_6, false}, {L'}', VK_OEM_6, true},
+		{L'\'', VK_OEM_7, false}, {L'"', VK_OEM_7, true}};
+	for (const auto& k : keys)
+	{
+		if (k.ch == ch)
+			return static_cast<SHORT>(k.vk | (k.shift ? 0x100 : 0));
+	}
+	return -1;
+}
+
+SHORT VkKeyScanExW(WCHAR ch, HKL)
+{
+	return VkKeyScanW(ch);
+}
+
+HKL GetKeyboardLayout(DWORD)
+{
+	return reinterpret_cast<HKL>(static_cast<uintptr_t>(0x04090409));
 }
 
 int GetKeyNameTextW(LONG lParam, LPWSTR text, int max)
@@ -2525,6 +3021,14 @@ namespace
 			if (e->type() == QEvent::KeyPress || e->type() == QEvent::KeyRelease)
 			{
 				auto* ke = static_cast<QKeyEvent*>(e);
+				// a key event goes to the parents too when the focus widget ignores it: once
+				static QEvent* last = nullptr;
+				static quint64 lastTime = 0;
+				if (e == last && ke->timestamp() == lastTime)
+					return false;
+				last = e;
+				lastTime = ke->timestamp();
+				trackKey(ke);
 				const int vk = vkFromQt(ke->key(), ke->nativeVirtualKey());
 				if (!vk)
 					return false;
@@ -2602,6 +3106,21 @@ void keybd_event(BYTE vk, BYTE, DWORD flags, ULONG_PTR)
 // ---- window subclassing (comctl32) ---------------------------------------------------------
 BOOL SetWindowSubclass(HWND hWnd, SUBCLASSPROC proc, UINT_PTR id, DWORD_PTR refData)
 {
+	if (isHostHandle(hWnd) && proc)
+	{
+		HostWindow* hw = hostWindow(hWnd);
+		for (Subclass& s : hw->subclasses)
+		{
+			if (s.proc == proc && s.id == id)
+			{
+				s.ref = refData;
+				return TRUE;
+			}
+		}
+		hw->subclasses.push_back(Subclass{proc, id, refData});
+		hookHost(hw);
+		return TRUE;
+	}
 	Window* w = win(hWnd);
 	if (!w || !proc)
 		return FALSE;
@@ -2619,6 +3138,19 @@ BOOL SetWindowSubclass(HWND hWnd, SUBCLASSPROC proc, UINT_PTR id, DWORD_PTR refD
 
 BOOL GetWindowSubclass(HWND hWnd, SUBCLASSPROC proc, UINT_PTR id, DWORD_PTR* refData)
 {
+	if (isHostHandle(hWnd))
+	{
+		for (const Subclass& s : hostWindow(hWnd)->subclasses)
+		{
+			if (s.proc == proc && s.id == id)
+			{
+				if (refData)
+					*refData = s.ref;
+				return TRUE;
+			}
+		}
+		return FALSE;
+	}
 	Window* w = win(hWnd);
 	if (!w)
 		return FALSE;
@@ -2636,6 +3168,19 @@ BOOL GetWindowSubclass(HWND hWnd, SUBCLASSPROC proc, UINT_PTR id, DWORD_PTR* ref
 
 BOOL RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC proc, UINT_PTR id)
 {
+	if (isHostHandle(hWnd))
+	{
+		HostWindow* hw = hostWindow(hWnd);
+		for (auto it = hw->subclasses.begin(); it != hw->subclasses.end(); ++it)
+		{
+			if (it->proc == proc && it->id == id)
+			{
+				hw->subclasses.erase(it);
+				return TRUE;
+			}
+		}
+		return FALSE;
+	}
 	Window* w = win(hWnd);
 	if (!w)
 		return FALSE;
@@ -2652,8 +3197,22 @@ BOOL RemoveWindowSubclass(HWND hWnd, SUBCLASSPROC proc, UINT_PTR id)
 
 LRESULT DefSubclassProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+	if (isHostHandle(hWnd))
+	{
+		HostWindow* hw = hostWindow(hWnd);
+		return hostDispatch(hw, hw->depth + 1, msg, wParam, lParam);
+	}
 	Window* w = win(hWnd);
 	if (!w)
 		return 0;
 	return callSubclasses(w, w->subclassDepth + 1, msg, wParam, lParam);
+}
+
+UINT GetWindowModuleFileNameW(HWND hWnd, LPWSTR path, UINT max)
+{
+	// the windows of this plugin: its .so; the others: Notepad++
+	const QString file = win(hWnd) ? moduleFile() : QCoreApplication::applicationFilePath();
+	if (!path || !max)
+		return 0;
+	return static_cast<UINT>(copyOut(file, path, static_cast<int>(max)));
 }

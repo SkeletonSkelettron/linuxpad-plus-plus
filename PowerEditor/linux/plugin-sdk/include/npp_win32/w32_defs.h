@@ -260,6 +260,7 @@
 #define WM_SYSCOLORCHANGE   0x0015
 #define WM_SHOWWINDOW       0x0018
 #define WM_SETTINGCHANGE    0x001A
+#define WM_DISPLAYCHANGE    0x007E
 #define WM_WININICHANGE     0x001A
 #define WM_ACTIVATEAPP      0x001C
 #define WM_SETCURSOR        0x0020
@@ -277,6 +278,8 @@
 #define WM_COMPAREITEM      0x0039
 #define WM_WINDOWPOSCHANGING 0x0046
 #define WM_WINDOWPOSCHANGED 0x0047
+#define WM_INPUTLANGCHANGEREQUEST 0x0050
+#define WM_INPUTLANGCHANGE  0x0051
 #define WM_NOTIFY           0x004E
 #define WM_HELP             0x0053
 #define WM_NOTIFYFORMAT     0x0055
@@ -351,12 +354,16 @@
 #define WM_ENTERSIZEMOVE    0x0231
 #define WM_EXITSIZEMOVE     0x0232
 #define WM_DROPFILES        0x0233
+#define WM_DEVICECHANGE     0x0219
 #define WM_DPICHANGED       0x02E0
 #define WM_MOUSEHOVER       0x02A1
 #define WM_MOUSELEAVE       0x02A3
 #define WM_CUT              0x0300
 #define WM_COPY             0x0301
 #define WM_PASTE            0x0302
+#define WM_RENDERFORMAT     0x0305
+#define WM_RENDERALLFORMATS 0x0306
+#define WM_DESTROYCLIPBOARD 0x0307
 #define WM_CLEAR            0x0303
 #define WM_UNDO             0x0304
 #define WM_PRINT            0x0317
@@ -691,6 +698,12 @@
 #define HTRIGHT             11
 #define HTTOP               12
 #define HTBOTTOM            15
+#define HTBORDER            18
+
+#define MA_ACTIVATE         1
+#define MA_ACTIVATEANDEAT   2
+#define MA_NOACTIVATE       3
+#define MA_NOACTIVATEANDEAT 4
 
 #define CS_VREDRAW          0x0001
 #define CS_HREDRAW          0x0002
@@ -702,6 +715,9 @@
 #define CS_SAVEBITS         0x0800
 #define CS_GLOBALCLASS      0x4000
 #define CS_DROPSHADOW       0x00020000
+
+#define USER_TIMER_MINIMUM  0x0000000A
+#define USER_TIMER_MAXIMUM  0x7FFFFFFF
 
 #define CW_USEDEFAULT       ((int)0x80000000)
 
@@ -991,11 +1007,21 @@
 #define VK_OEM_8      0xDF
 #define VK_OEM_102    0xE2
 
+#define KF_EXTENDED   0x0100
+#define KF_DLGMODE    0x0800
+#define KF_MENUMODE   0x1000
+#define KF_ALTDOWN    0x2000
+#define KF_REPEAT     0x4000
+#define KF_UP         0x8000
+
 #define MK_LBUTTON    0x0001
 #define MK_RBUTTON    0x0002
 #define MK_SHIFT      0x0004
 #define MK_CONTROL    0x0008
 #define MK_MBUTTON    0x0010
+#define MK_XBUTTON1   0x0020
+#define MK_XBUTTON2   0x0040
+#define MK_ALT        0x0020 // key state of OLE drag and drop
 #define WHEEL_DELTA   120
 
 #define MOD_ALT       0x0001
@@ -1096,6 +1122,7 @@
 #define INVALID_SET_FILE_POINTER ((DWORD)-1)
 #define MOVEFILE_REPLACE_EXISTING 0x00000001
 #define MOVEFILE_COPY_ALLOWED     0x00000002
+#define MOVEFILE_WRITE_THROUGH    0x00000008
 
 // ---- errors, results ---------------------------------------------------------------
 #define ERROR_SUCCESS           0L
@@ -1106,23 +1133,70 @@
 #define ERROR_ACCESS_DENIED     5L
 #define ERROR_INVALID_HANDLE    6L
 #define ERROR_NOT_ENOUGH_MEMORY 8L
+#define ERROR_MOD_NOT_FOUND     126L
 #define ERROR_NO_MORE_FILES     18L
+#define ERROR_HANDLE_EOF 38
 #define ERROR_SHARING_VIOLATION 32L
 #define ERROR_FILE_EXISTS       80L
 #define ERROR_INVALID_PARAMETER 87L
 #define ERROR_BROKEN_PIPE       109L
 #define ERROR_INSUFFICIENT_BUFFER 122L
 #define ERROR_ALREADY_EXISTS    183L
+#define ERROR_BAD_FORMAT        11L
+#define ERROR_NOT_SUPPORTED     50L
+#ifndef ERROR_CALL_NOT_IMPLEMENTED
+#define ERROR_CALL_NOT_IMPLEMENTED 120L
+#endif
+
+// ---- processes, consoles, jobs --------------------------------------------------------
+#ifndef CREATE_NEW_PROCESS_GROUP
+#define CREATE_NEW_PROCESS_GROUP 0x00000200
+#endif
+#define CREATE_BREAKAWAY_FROM_JOB 0x01000000
+#define EXTENDED_STARTUPINFO_PRESENT 0x00080000
+#define PROC_THREAD_ATTRIBUTE_HANDLE_LIST 0x00020002
+#define PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE 0x00020016
+#define CTRL_C_EVENT 0
+#define CTRL_BREAK_EVENT 1
+#define CTRL_CLOSE_EVENT 2
+#define JOB_OBJECT_LIMIT_BREAKAWAY_OK 0x00000800
+#define JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK 0x00001000
+#define JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE 0x00002000
+#define SECURITY_DESCRIPTOR_REVISION 1
+#define SECURITY_DESCRIPTOR_MIN_LENGTH 40
+#define VER_PLATFORM_WIN32s 0
+#define VER_PLATFORM_WIN32_WINDOWS 1
+#define VER_PLATFORM_WIN32_NT 2
+#ifndef HS_HORIZONTAL
+#define HS_HORIZONTAL 0
+#define HS_VERTICAL 1
+#define HS_FDIAGONAL 2
+#define HS_BDIAGONAL 3
+#define HS_CROSS 4
+#define HS_DIAGCROSS 5
+#endif
+
+// ---- access rights ---------------------------------------------------------------------
+#ifndef SYNCHRONIZE
+#define SYNCHRONIZE                 0x00100000L
+#endif
+#ifndef STANDARD_RIGHTS_REQUIRED
+#define STANDARD_RIGHTS_REQUIRED    0x000F0000L
+#endif
+#define EVENT_MODIFY_STATE          0x0002
+#define EVENT_ALL_ACCESS            (STANDARD_RIGHTS_REQUIRED | SYNCHRONIZE | 0x3)
 #define ERROR_MORE_DATA         234L
 #define ERROR_NO_MORE_ITEMS     259L
 #define ERROR_CANCELLED         1223L
 #define S_OK                    ((HRESULT)0L)
 #define S_FALSE                 ((HRESULT)1L)
 #define E_NOTIMPL               ((HRESULT)0x80004001L)
+#define REGDB_E_CLASSNOTREG     ((HRESULT)0x80040154L)
 #define E_NOINTERFACE           ((HRESULT)0x80004002L)
 #define E_POINTER               ((HRESULT)0x80004003L)
 #define E_FAIL                  ((HRESULT)0x80004005L)
 #define E_UNEXPECTED            ((HRESULT)0x8000FFFFL)
+#define RPC_E_CHANGED_MODE      ((HRESULT)0x80010106L)
 #define E_OUTOFMEMORY           ((HRESULT)0x8007000EL)
 #define E_INVALIDARG            ((HRESULT)0x80070057L)
 #define E_ACCESSDENIED          ((HRESULT)0x80070005L)
@@ -1225,6 +1299,11 @@
 #define OEM_CHARSET         255
 #define OUT_DEFAULT_PRECIS  0
 #define OUT_TT_PRECIS       4
+#define OUT_TT_ONLY_PRECIS  7
+#define BLACKONWHITE        1
+#define WHITEONBLACK        2
+#define COLORONCOLOR        3
+#define HALFTONE            4
 #define OUT_OUTLINE_PRECIS  8
 #define CLIP_DEFAULT_PRECIS 0
 #define DEFAULT_QUALITY     0
@@ -1271,6 +1350,9 @@
 #define SRCPAINT            0x00EE0086
 #define SRCAND              0x008800C6
 #define SRCINVERT           0x00660046
+#define PATINVERT           0x005A0049
+#define DSTINVERT           0x00550009
+#define PATPAINT            0x00FB0A09
 #define PATCOPY             0x00F00021
 #define BLACKNESS           0x00000042
 #define WHITENESS           0x00FF0062

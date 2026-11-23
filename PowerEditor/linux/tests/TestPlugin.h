@@ -32,3 +32,14 @@ struct TestPluginReport
 	int about = 0;
 	int dynamicCommands = 0;
 };
+
+// NPPM_MSGTOPLUGIN kGet: the plugin downloads url with WinInet (InternetOpenUrl, HttpQueryInfo, InternetReadFile)
+struct TestPluginInet
+{
+	static constexpr long kGet = 2;
+	const wchar_t* url = nullptr;
+	char body[128] = {};
+	unsigned int status = 0;
+	unsigned int contentLength = 0;
+	int opened = 0;
+};

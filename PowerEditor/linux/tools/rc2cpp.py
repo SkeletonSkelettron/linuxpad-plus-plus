@@ -45,8 +45,40 @@ IMAGE_TYPES = {"BITMAP": "IMAGE_BITMAP", "ICON": "IMAGE_ICON", "CURSOR": "IMAGE_
 FILE_TYPES = {"RCDATA": 10, "MESSAGETABLE": 11, "FONT": 8, "HTML": 23, "MANIFEST": 24}
 
 
+def join_string_lines(source):
+    """rc.exe lets a string go on to the next line: the line break becomes a space."""
+    out = []
+    in_string = False
+    i = 0
+    while i < len(source):
+        c = source[i]
+        if in_string:
+            if c == "\\" and i + 1 < len(source) and source[i + 1] != "\n":
+                out.append(source[i:i + 2])
+                i += 2
+                continue
+            if c == '"':
+                if i + 1 < len(source) and source[i + 1] == '"':
+                    out.append('""')
+                    i += 2
+                    continue
+                in_string = False
+            elif c == "\n":
+                out.append(" ")
+                i += 1
+                continue
+        elif c == '"':
+            in_string = True
+        elif c == "\n":
+            in_string = False
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def statements(source):
     """Join wrapped statements and split inline BEGIN/END into separate tokens."""
+    source = join_string_lines(source)
     pending = []
     line = 0
     continuation = {",", "|", "&", "^", "<<", ">>", "+"}
@@ -98,6 +130,10 @@ def is_number(tokens):
 
 
 def rc_string(tokens):
+    # a number after the strings is appended as text ("1" L"." BUILD_NUMBER of version macros)
+    if tokens and STRING.fullmatch(tokens[0]):
+        tokens = [token if STRING.fullmatch(token) or not NUMBER.fullmatch(token) else '"%d"' % eval_number(token)
+                  for token in tokens]
     if not tokens or any(not STRING.fullmatch(token) for token in tokens):
         raise ValueError("expected a quoted string, got " + " ".join(tokens))
     escapes = {"n": "\n", "r": "\r", "t": "\t", "a": "\a", "\\": "\\", '"': '"'}
@@ -157,6 +193,12 @@ def style(default, tokens):
     return f"static_cast<DWORD>({result})"
 
 
+def eval_number(token):
+    """A number of a data block: 12, 0x1F, 12L, -1."""
+    text = token.rstrip("lLuU")
+    return int(text, 0) if not text.startswith("-") else -int(text[1:], 0)
+
+
 def resource_name(tokens):
     if is_number(tokens):
         return expression(tokens), "nullptr"
@@ -168,7 +210,8 @@ def resource_name(tokens):
 
 
 class Compiler:
-    def __init__(self, source, script):
+    def __init__(self, source, script, includes=()):
+        self.includes = [Path(i) for i in includes]
         self.input = iter(statements(source))
         self.script = script
         self.line = 0
@@ -231,6 +274,9 @@ class Compiler:
         ]
 
     def dialog(self, identifier, args):
+        if not args:
+            # "106 DIALOGEX" with the coordinates on the next line
+            args = self.next_statement()
         coords = fields(args)
         if len(coords) not in (4, 5):
             raise ValueError("expected four dialog coordinates")
@@ -243,7 +289,8 @@ class Compiler:
         font = fields(props["FONT"]) if "FONT" in props else []
         caption = wide(rc_string(props["CAPTION"])) if "CAPTION" in props else 'L""'
         self.tables["Dialog"].append([
-            *identifier, *(expression(coord) for coord in coords[:4]),
+            # 16 bits, like the dialog templates of Windows (64536 is -1000)
+            *identifier, *(f"static_cast<short>({expression(coord)})" for coord in coords[:4]),
             style("0" if "STYLE" in props else "WS_POPUP | WS_BORDER | WS_SYSMENU", props.get("STYLE", [])),
             style("0", props.get("EXSTYLE", [])), caption,
             wide(rc_string(font[1])) if font else 'L""',
@@ -323,11 +370,52 @@ class Compiler:
         self.code.append("\tconst NppRcVersion version = {" + ", ".join(row) + "};")
         self.version = "&version"
 
+    def inline_resource(self, identifier, kind):
+        """A resource with its data in the script: BEGIN 1, 2L, "text", L"wide" END."""
+        data = bytearray()
+        for row in self.block():
+            for token in row:
+                if token == ",":
+                    continue
+                if STRING.fullmatch(token):
+                    text = rc_string([token])
+                    data += text.encode("utf-16-le") if token.startswith("L") else text.encode("utf-8")
+                    continue
+                long_value = token.upper().endswith("L")
+                value = eval_number(token)
+                data += int(value).to_bytes(4 if long_value else 2, "little", signed=False) if value >= 0 else \
+                    int(value).to_bytes(4 if long_value else 2, "little", signed=True)
+        if kind in {"AFX_DIALOG_LAYOUT", "DESIGNINFO", "TEXTINCLUDE"}:
+            return  # data of the resource editor of Visual Studio
+        self.serial += 1
+        name = f"bytes{self.serial}"
+        self.code.append(f"\tconst unsigned char {name}[] = {{")
+        for start in range(0, len(data), 20):
+            self.code.append("\t\t" + ", ".join(str(b) for b in data[start:start + 20]) + ",")
+        if not data:
+            self.code.append("\t\t0,")
+        self.code.append("\t};")
+        type_name = "nullptr"
+        if kind in FILE_TYPES:
+            type_id = str(FILE_TYPES[kind])
+        elif NUMBER.fullmatch(kind):
+            type_id = kind
+        else:
+            type_id = "-1"
+            type_name = wide(rc_string([kind]) if STRING.fullmatch(kind) else kind)
+        self.tables["Data"].append([type_id, type_name, *identifier, name, str(len(data))])
+
     def file_resource(self, identifier, kind, args):
         if len(args) != 1 or not STRING.fullmatch(args[0]):
             raise ValueError(f"expected a file for the {kind} resource")
         path = args[0].removeprefix("L")[1:-1].replace("\\\\", "\\").replace("\\", "/")
+        # like rc.exe: the folder of the script, then the include folders
         filename = (self.script.parent / path).resolve()
+        if not filename.exists():
+            for folder in self.includes:
+                if (folder / path).exists():
+                    filename = (folder / path).resolve()
+                    break
         self.dependencies.add(filename)
         data = filename.read_bytes()
         self.serial += 1
@@ -356,7 +444,14 @@ class Compiler:
                 if tokens[0].upper() in RESOURCE_METADATA:
                     continue
                 if tokens[0].upper() == "STRINGTABLE":
+                    pending = []
                     for row in self.block():
+                        # "IDS_X" alone on its line, the string on the next one
+                        row = pending + row
+                        if not any(STRING.fullmatch(token) for token in row):
+                            pending = row
+                            continue
+                        pending = []
                         split = next(i for i, token in enumerate(row) if STRING.fullmatch(token))
                         key = expression(row[:split - 1] if row[split - 1] == "," else row[:split])
                         self.tables["String"].append([key, wide(rc_string(row[split:]))])
@@ -385,6 +480,8 @@ class Compiler:
                     self.tables["AccelTable"].append([*identifier, *keys])
                 elif kind == "VERSIONINFO":
                     self.version_info(args)
+                elif not args:
+                    self.inline_resource(identifier, kind)
                 else:
                     self.file_resource(identifier, kind, args)
         except (IndexError, KeyError, OSError, StopIteration, ValueError) as exc:
@@ -411,6 +508,24 @@ def make_escape(path):
     return str(path).replace("$", "$$").replace("#", "\\#").replace(" ", "\\ ")
 
 
+HEADER_SUFFIXES = (".h", ".hh", ".hpp", ".hxx", ".inl", ".c", ".cc", ".cpp", ".cxx")
+
+
+def drop_header_text(preprocessed):
+    """Like rc.exe, keep only the preprocessor directives of included .h and .c files:
+    their macros apply, their C/C++ text is not part of the script."""
+    lines = []
+    keep = True
+    for line in preprocessed.splitlines():
+        marker = re.match(r'#\s*(?:line\s+)?\d+\s+"((?:[^"\\]|\\.)*)"', line)
+        if marker:
+            keep = not marker.group(1).lower().endswith(HEADER_SUFFIXES)
+            lines.append("")
+        else:
+            lines.append(line if keep else "")
+    return "\n".join(lines)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--compiler", required=True, help="GCC- or Clang-compatible C compiler")
@@ -420,9 +535,11 @@ def main():
     parser.add_argument("output", type=Path)
     args = parser.parse_args()
     command = [
-        args.compiler, "-E", "-P", "-x", "c", "-DRC_INVOKED",
+        args.compiler, "-E", "-x", "c", "-DRC_INVOKED", "-DNPP_PLUGIN_SDK_LINUX=1",
         "-MMD", "-MF", str(args.depfile), "-MQ", str(args.output),
-        *(f"-I{directory}" for directory in args.include), str(args.input),
+        *(f"-I{directory}" for directory in args.include),
+        f"-I{args.input.resolve().parent}",  # like rc.exe, <file.h> next to the script too
+        str(args.input),
     ]
     try:
         stdin = None
@@ -431,8 +548,20 @@ def main():
                 source.seek(0)
                 stdin = source.read().decode("utf-16")
                 command[-1:] = ["-iquote", str(args.input.resolve().parent), "-"]
-        preprocessed = subprocess.run(command, input=stdin, check=True, stdout=subprocess.PIPE, encoding="utf-8").stdout
-        compiler = Compiler(preprocessed, args.input)
+            else:
+                # scripts in the ANSI code page of Windows (#pragma code_page, else 1252)
+                source.seek(0)
+                raw = source.read()
+                try:
+                    raw.decode("utf-8")
+                except UnicodeDecodeError:
+                    page = re.search(rb"#\s*pragma\s+code_page\s*\(\s*(\d+)\s*\)", raw)
+                    codepage = int(page.group(1)) if page and page.group(1) != b"65001" else 1252
+                    stdin = raw.decode(f"cp{codepage}", errors="replace")
+                    command[-1:] = ["-iquote", str(args.input.resolve().parent), "-"]
+        preprocessed = subprocess.run(command, input=stdin, check=True, stdout=subprocess.PIPE,
+                                      encoding="utf-8", errors="replace").stdout
+        compiler = Compiler(drop_header_text(preprocessed), args.input, args.include)
         code = compiler.compile()
         if compiler.dependencies:
             with args.depfile.open("a", encoding="utf-8") as depfile:

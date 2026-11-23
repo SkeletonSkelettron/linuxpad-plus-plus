@@ -63,7 +63,7 @@ public:
 	UserLang* find(const QString& name);
 	UserLang& scratch() { return _scratch; } // IDM_LANG_USER: the language of the dialog not saved yet
 	QString langNameFromExt(const QString& ext, const QString& fileName) const; // getUserDefinedLangNameFromExt()
-	static QString folder(); // ~/.config/notepad++/userDefineLangs
+	static QString folder(); // ~/.config/linuxpad++/userDefineLangs
 
 	// ScintillaEditView::setUserLexer(): bufferId identifies the document for the lexer
 	static void setUserLexer(ScintillaEditBase* sci, const UserLang& lang, sptr_t bufferId);

@@ -20,10 +20,13 @@
 
 #include "../win32/W32Internal.h"
 
-BOOL APIENTRY DllMain(HANDLE hModule, DWORD reasonForCall, LPVOID reserved);
+// The DllMain of the plugin, with C++ linkage or with C linkage (extern "C" DllMain)
+BOOL APIENTRY DllMain(HANDLE hModule, DWORD reasonForCall, LPVOID reserved) __attribute__((weak));
+BOOL APIENTRY nppDllMainC(HANDLE hModule, DWORD reasonForCall, LPVOID reserved) __asm__("DllMain") __attribute__((weak));
 
 extern "C" __declspec(dllexport) BOOL nppLinuxInitialize()
 {
-	static const BOOL initialized = DllMain(w32::moduleHandle(), DLL_PROCESS_ATTACH, nullptr);
+	static const BOOL initialized = DllMain ? DllMain(w32::moduleHandle(), DLL_PROCESS_ATTACH, nullptr)
+		: (nppDllMainC ? nppDllMainC(w32::moduleHandle(), DLL_PROCESS_ATTACH, nullptr) : TRUE);
 	return initialized;
 }

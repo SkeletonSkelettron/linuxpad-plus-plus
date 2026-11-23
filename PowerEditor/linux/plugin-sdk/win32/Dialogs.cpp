@@ -42,6 +42,7 @@
 #include <QToolTip>
 
 #include "W32Internal.h"
+#include <richedit.h>
 
 namespace w32
 {
@@ -86,6 +87,12 @@ namespace w32
 			return Kind::Header;
 		if (cls == L"msctls_statusbar32")
 			return Kind::StatusBar;
+		if (cls == L"msctls_hotkey32")
+			return Kind::HotKey;
+		if (cls == L"toolbarwindow32")
+			return Kind::Toolbar;
+		if (cls == L"rebarwindow32")
+			return Kind::Rebar;
 		if (cls == L"scintilla")
 			return Kind::Scintilla;
 		return Kind::Generic;
@@ -190,6 +197,8 @@ namespace w32
 				if ((style & ES_MULTILINE) || rich)
 				{
 					auto* e = new QPlainTextEdit(parent);
+					if (rich)
+						e->setProperty("nppRichEdit", true); // positions with one character per line end
 					e->setPlainText(text);
 					e->setReadOnly(style & ES_READONLY);
 					e->setLineWrapMode((style & (WS_HSCROLL | ES_AUTOHSCROLL)) ? QPlainTextEdit::NoWrap : QPlainTextEdit::WidgetWidth);
@@ -344,6 +353,12 @@ namespace w32
 						w->destroyed = true;
 					});
 					installControlFilter(w);
+					// the text of the template or of CreateWindowEx (the markup of a SysLink)
+					if (kind == Kind::Link && !text.isEmpty())
+					{
+						const std::wstring t = ws(text);
+						commonControlProc(w, WM_SETTEXT, 0, reinterpret_cast<LPARAM>(t.c_str()));
+					}
 					*out = w;
 					return w->widget;
 				}
@@ -433,6 +448,19 @@ namespace w32
 				if (auto* le = qobject_cast<QLineEdit*>(widget))
 				{
 					QObject::connect(le, &QLineEdit::textChanged, le, [w] { notifyCommand(w, EN_UPDATE); notifyCommand(w, EN_CHANGE); });
+				}
+				else if (auto* pe = qobject_cast<QPlainTextEdit*>(widget); pe && isRichEdit(pe))
+				{
+					// a rich edit notifies what its event mask asks for
+					QObject::connect(pe, &QPlainTextEdit::textChanged, pe, [w]
+					{
+						if (w->eventMask & ENM_UPDATE)
+							notifyCommand(w, EN_UPDATE);
+						if (w->eventMask & ENM_CHANGE)
+							notifyCommand(w, EN_CHANGE);
+					});
+					QObject::connect(pe, &QPlainTextEdit::cursorPositionChanged, pe, [w] { richEditSelChanged(w); });
+					QObject::connect(pe, &QPlainTextEdit::selectionChanged, pe, [w] { richEditSelChanged(w); });
 				}
 				else if (auto* pe = qobject_cast<QPlainTextEdit*>(widget))
 				{
@@ -555,6 +583,8 @@ namespace w32
 		// position of a Windows edit box (CRLF line ends) in a Qt text (LF)
 		int qtPos(QPlainTextEdit* e, int winPos)
 		{
+			if (isRichEdit(e))
+				return winPos; // RichEdit: one character per line end, like Qt
 			const QString t = e->toPlainText();
 			int win = 0;
 			for (int i = 0; i < t.size(); ++i)
@@ -568,6 +598,8 @@ namespace w32
 
 		int winPos(QPlainTextEdit* e, int qtPosition)
 		{
+			if (isRichEdit(e))
+				return qtPosition;
 			const QString t = e->toPlainText().left(qtPosition);
 			return static_cast<int>(t.size() + t.count(QLatin1Char('\n')));
 		}
@@ -576,6 +608,12 @@ namespace w32
 		{
 			auto* le = qobject_cast<QLineEdit*>(w->widget);
 			auto* pe = qobject_cast<QPlainTextEdit*>(w->widget);
+			if (pe && isRichEdit(pe))
+			{
+				const LRESULT r = richEditProc(w, msg, wParam, lParam);
+				if (r != -0x7FFFFFFF)
+					return r;
+			}
 			switch (msg)
 			{
 				case EM_GETSEL:
@@ -892,6 +930,25 @@ namespace w32
 					return 0;
 				case LB_GETCOUNT: case CB_GETCOUNT:
 					return count();
+				case CBEM_GETCOMBOCONTROL: // a ComboBoxEx32 is the combo box itself
+					return c ? reinterpret_cast<LRESULT>(hwnd(w)) : 0;
+				case CB_GETCOMBOBOXINFO:
+				{
+					auto* info = reinterpret_cast<COMBOBOXINFO*>(lParam);
+					if (!c || !info)
+						return FALSE;
+					// the edit and the list are the combo box: their messages go to it
+					const QRect r = c->rect();
+					info->rcItem = RECT{2, 2, r.width() - 20, r.height() - 2};
+					info->rcButton = RECT{r.width() - 18, 2, r.width() - 2, r.height() - 2};
+					info->stateButton = 0;
+					info->hwndCombo = hwnd(w);
+					info->hwndItem = hwnd(w);
+					info->hwndList = hwnd(w);
+					return TRUE;
+				}
+				case CBEM_GETEDITCONTROL:
+					return 0;
 				case LB_GETCURSEL: case CB_GETCURSEL:
 					if (c)
 						return c->currentIndex();
@@ -1113,8 +1170,6 @@ namespace w32
 						c->lineEdit()->setPlaceholderText(qs(reinterpret_cast<LPCWSTR>(lParam)));
 					else if (c)
 						c->setPlaceholderText(qs(reinterpret_cast<LPCWSTR>(lParam)));
-					return TRUE;
-				case CB_GETCOMBOBOXINFO:
 					return TRUE;
 				default:
 					return -0x7FFFFFFF;
@@ -1424,6 +1479,7 @@ namespace w32
 		// when it becomes the content of a new dock widget.
 		dlg->setMinimumSize(client.size());
 		dlg->resize(client.size());
+		w->lastSize = client.size();
 		if (child)
 			dlg->move(client.topLeft());
 
@@ -1506,6 +1562,8 @@ namespace w32
 		}
 		if ((t->style & WS_VISIBLE) && !modal)
 			dlg->show();
+		else if (child)
+			dlg->hide(); // explicitly: Qt shows the children of a parent that is shown later, Windows does not
 		return hwnd(w);
 	}
 }
@@ -1787,4 +1845,9 @@ BOOL MessageBeep(UINT)
 {
 	QApplication::beep();
 	return TRUE;
+}
+
+BOOL GetComboBoxInfo(HWND hwndCombo, PCOMBOBOXINFO info)
+{
+	return SendMessageW(hwndCombo, CB_GETCOMBOBOXINFO, 0, reinterpret_cast<LPARAM>(info)) ? TRUE : FALSE;
 }

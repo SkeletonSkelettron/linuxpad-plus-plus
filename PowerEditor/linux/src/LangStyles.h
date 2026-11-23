@@ -31,6 +31,7 @@
 
 class ScintillaEditBase;
 struct UserLang;
+namespace Scintilla { class ILexer5; }
 
 struct Style
 {
@@ -78,6 +79,16 @@ struct LangDef
 	bool backspaceUnindent = false;
 };
 
+// A lexer of a lexer plugin (PluginsManager::loadPluginFromPath() of Notepad++): the language
+// L_EXTERNAL + its index, CreateLexer of the plugin, the <Languages> part of its configuration.
+struct ExternalLexer
+{
+	using CreateLexerFn = Scintilla::ILexer5* (*)(const char* name);
+	QString name;
+	CreateLexerFn createLexer = nullptr;
+	LangDef def; // keywords, extensions and comments of plugins/Config/<module>.xml
+};
+
 class StyleManager
 {
 public:
@@ -95,7 +106,14 @@ public:
 	LangType langFromName(const QString& langName) const;
 	LangType langFromMenuId(int menuId) const;
 	int menuIdFromLang(LangType lang) const;
-	LangType langFromFileName(const QString& path) const;
+	LangType langFromFileName(const QString& path, QString* externalName = nullptr) const; // L_EXTERNAL: *externalName
+
+	// lexer plugins: at most NB_MAX_EXTERNAL_LANG, L_EXTERNAL + index for the plugins
+	static constexpr int maxExternalLexers = 15; // IDM_LANG_EXTERNAL .. IDM_LANG_EXTERNAL_LIMIT
+	int addExternalLexer(const QString& name, ExternalLexer::CreateLexerFn createLexer); // the index, -1 if full or known
+	bool loadExternalLexerConfig(const QString& xmlPath); // <Languages> and <LexerStyles> of the plugin
+	const std::vector<ExternalLexer>& externalLexers() const { return _externalLexers; }
+	int externalLexerIndex(const QString& name) const; // -1: none
 	static LangType langFromContent(const QByteArray& head);
 
 	const LangDef* langDef(LangType lang) const;
@@ -107,7 +125,8 @@ public:
 	const LexerStyler* lexerStylerByName(const QString& name) const;
 
 	// Port of ScintillaEditView::defineDocType() and performGlobalStyles()
-	void defineDocType(ScintillaEditBase* sci, LangType typeDoc, const UserLang* udl = nullptr, sptr_t bufferId = 0) const;
+	void defineDocType(ScintillaEditBase* sci, LangType typeDoc, const UserLang* udl = nullptr, sptr_t bufferId = 0,
+		const QString& externalName = QString()) const; // externalName: the lexer of L_EXTERNAL
 	void performGlobalStyles(ScintillaEditBase* sci) const;
 	void applyEolAppearance(ScintillaEditBase* sci) const; // ScintillaEditView::setCRLF()
 	void setSpecialStyle(ScintillaEditBase* sci, const Style& style) const;
@@ -123,6 +142,8 @@ private:
 	void populateSubStyleKeywords(ScintillaEditBase* sci, LangType langType, int baseStyleID, int numSubStyles, int firstLangIndex, const char** pKwArray) const;
 	void setLexer(ScintillaEditBase* sci, LangType langType, int whichList, int baseStyleID = STYLE_NOT_USED, int numSubStyles = 8) const;
 	void setLexerFromLangID(ScintillaEditBase* sci, LangType langID) const;
+	void setExternalLexer(ScintillaEditBase* sci, const QString& name) const;
+	void mergeExternalStylers(); // the styles of the lexer plugins that the stylers miss
 	const char* concatToBuildKeywordList(std::string& kwl, LangType langType, int keywordIndex) const;
 
 	void setCppLexer(ScintillaEditBase* sci, LangType langType) const;
@@ -143,6 +164,8 @@ private:
 	std::vector<LangDef> _langs; // indexed by LangType
 	StyleArray _globalStyles;
 	std::vector<LexerStyler> _lexerStylers;
+	std::vector<ExternalLexer> _externalLexers;
+	std::vector<LexerStyler> _externalStylers; // of the configurations of the lexer plugins
 	QString _themePath;
 	QString _loadedStylersPath;
 	mutable std::string _kwBuffer[NB_LIST * 2];

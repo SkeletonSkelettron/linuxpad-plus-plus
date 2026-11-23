@@ -1532,6 +1532,21 @@ BOOL StretchBlt(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, 
 	return TRUE;
 }
 
+BOOL SetBrushOrgEx(HDC, int, int, LPPOINT old)
+{
+	// the patterns start at the origin of the DC here
+	if (old)
+		*old = POINT{0, 0};
+	return TRUE;
+}
+
+BOOL GetBrushOrgEx(HDC, LPPOINT pt)
+{
+	if (pt)
+		*pt = POINT{0, 0};
+	return TRUE;
+}
+
 BOOL PatBlt(HDC hdc, int x, int y, int cx, int cy, DWORD rop)
 {
 	Dc* d = dcOf(hdc);
@@ -1542,6 +1557,14 @@ BOOL PatBlt(HDC hdc, int x, int y, int cx, int cy, DWORD rop)
 		p->fillRect(QRect(x, y, cx, cy), Qt::black);
 	else if (rop == WHITENESS)
 		p->fillRect(QRect(x, y, cx, cy), Qt::white);
+	else if (rop == PATINVERT || rop == DSTINVERT)
+	{
+		// XOR of the brush (DSTINVERT: of white) with what is there: drawn twice, it goes away
+		const QPainter::CompositionMode old = p->compositionMode();
+		p->setCompositionMode(QPainter::RasterOp_SourceXorDestination);
+		p->fillRect(QRect(x, y, cx, cy), rop == DSTINVERT ? QBrush(Qt::white) : brushOf(d->brush, d));
+		p->setCompositionMode(old);
+	}
 	else
 		p->fillRect(QRect(x, y, cx, cy), brushOf(d->brush, d));
 	return TRUE;
@@ -1569,7 +1592,7 @@ BOOL TransparentBlt(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int 
 	return TRUE;
 }
 
-BOOL AlphaBlend(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, int scx, int scy, DWORD blend)
+BOOL AlphaBlend(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, int scx, int scy, BLENDFUNCTION blend)
 {
 	Dc* d = dcOf(dst);
 	QPainter* p = painterOf(d);
@@ -1577,7 +1600,7 @@ BOOL AlphaBlend(HDC dst, int x, int y, int cx, int cy, HDC src, int sx, int sy, 
 	if (!p || !img)
 		return FALSE;
 	p->save();
-	p->setOpacity(((blend >> 16) & 0xFF) / 255.0);
+	p->setOpacity(blend.SourceConstantAlpha / 255.0);
 	p->drawImage(QRect(x, y, cx, cy), *img, QRect(sx, sy, scx, scy));
 	p->restore();
 	return TRUE;
@@ -1796,4 +1819,50 @@ HRESULT LoadIconWithScaleDown(HINSTANCE hInst, PCWSTR name, int cx, int cy, HICO
 		return E_POINTER;
 	*icon = LoadImageW(hInst, name, IMAGE_ICON, cx, cy, 0);
 	return *icon ? S_OK : E_FAIL;
+}
+
+// ---- font families -----------------------------------------------------------------------------
+int EnumFontFamiliesExW(HDC, LPLOGFONTW logFont, FONTENUMPROCW proc, LPARAM data, DWORD)
+{
+	if (!proc)
+		return 0;
+	const QString wanted = logFont ? qs(logFont->lfFaceName) : QString();
+	int last = 1;
+	for (const QString& family : QFontDatabase::families())
+	{
+		if (!wanted.isEmpty() && family.compare(wanted, Qt::CaseInsensitive) != 0)
+			continue;
+		if (QFontDatabase::isPrivateFamily(family))
+			continue;
+		ENUMLOGFONTEXW elf{};
+		copyOut(family, elf.elfLogFont.lfFaceName, LF_FACESIZE);
+		copyOut(family, elf.elfFullName, LF_FULLFACESIZE);
+		copyOut(QStringLiteral("Regular"), elf.elfStyle, LF_FACESIZE);
+		copyOut(QStringLiteral("Western"), elf.elfScript, LF_FACESIZE);
+		const bool fixed = QFontDatabase::isFixedPitch(family);
+		elf.elfLogFont.lfCharSet = logFont ? logFont->lfCharSet : DEFAULT_CHARSET;
+		elf.elfLogFont.lfPitchAndFamily = static_cast<BYTE>((fixed ? FIXED_PITCH : VARIABLE_PITCH) | (fixed ? FF_MODERN : FF_DONTCARE));
+		elf.elfLogFont.lfWeight = FW_NORMAL;
+		elf.elfLogFont.lfHeight = 16;
+		NEWTEXTMETRICEXW tm{};
+		tm.ntmTm.tmHeight = 16;
+		tm.ntmTm.tmWeight = FW_NORMAL;
+		// TMPF_FIXED_PITCH is set for the variable fonts (the name of Windows is the other way)
+		tm.ntmTm.tmPitchAndFamily = static_cast<BYTE>(fixed ? 0 : 1);
+		tm.ntmTm.tmCharSet = elf.elfLogFont.lfCharSet;
+		const DWORD type = QFontDatabase::isScalable(family) ? TRUETYPE_FONTTYPE : RASTER_FONTTYPE;
+		last = proc(reinterpret_cast<const LOGFONTW*>(&elf), reinterpret_cast<const TEXTMETRICW*>(&tm), type, data);
+		if (!last)
+			break;
+	}
+	return last;
+}
+
+int EnumFontFamiliesW(HDC hdc, LPCWSTR family, FONTENUMPROCW proc, LPARAM data)
+{
+	LOGFONTW lf{};
+	lf.lfCharSet = DEFAULT_CHARSET;
+	if (family)
+		copyOut(qs(family), lf.lfFaceName, LF_FACESIZE);
+	return EnumFontFamiliesExW(hdc, &lf, proc, data, 0);
 }

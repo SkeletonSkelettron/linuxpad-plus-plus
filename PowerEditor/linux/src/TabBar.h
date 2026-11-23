@@ -51,7 +51,7 @@ public:
 	void setColorIndexProvider(std::function<int(int)> fn) { _colorIndex = std::move(fn); }
 
 	// a tab dragged out of a tab bar (to the other view, like Notepad++)
-	static const char* dragMimeType() { return "application/x-notepad-plus-plus-tab"; }
+	static const char* dragMimeType() { return "application/x-linuxpad-plus-plus-tab"; }
 	static bool decodeDrag(const QMimeData* mime, NppTabBar** source, int* index);
 
 signals:

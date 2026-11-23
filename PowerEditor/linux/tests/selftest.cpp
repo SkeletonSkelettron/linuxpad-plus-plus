@@ -58,6 +58,8 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QTimer>
+#include <QTcpServer>
+#include <QTcpSocket>
 #include <QTreeWidget>
 
 #include "Dialogs.h"
@@ -378,7 +380,7 @@ int main(int argc, char** argv)
 	if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM"))
 		qputenv("QT_QPA_PLATFORM", "offscreen");
 
-	QApplication::setApplicationName(QStringLiteral("notepad++"));
+	QApplication::setApplicationName(QStringLiteral("linuxpad++"));
 	QApplication app(argc, argv);
 	const bool lightModeTest = app.arguments().contains(QStringLiteral("--test-light-mode"));
 	if (argc > 1 && !lightModeTest)
@@ -387,16 +389,40 @@ int main(int argc, char** argv)
 		QDir().mkpath(g_shotDir);
 	}
 
+	// settings of Notepad++ (the old name of LinuxPad++): copied once to ~/.config/linuxpad++ at the first start
+	const QString oldSettings = config.path() + QStringLiteral("/notepad++");
+	const QString newSettings = config.path() + QStringLiteral("/linuxpad++");
+	const QByteArray oldPathText = "path=" + (oldSettings + QStringLiteral("/plugins/config/data.txt")).toUtf8() + "\n";
+	if (!lightModeTest)
+	{
+		QDir().mkpath(oldSettings + QStringLiteral("/plugins/config"));
+		QDir().mkpath(oldSettings + QStringLiteral("/backup"));
+		writeAll(oldSettings + QStringLiteral("/plugins/config/MigrationTest.ini"), oldPathText);
+		writeAll(oldSettings + QStringLiteral("/backup/kept.txt"), oldPathText);
+	}
+
 	NppPrefs& prefs = Npp::prefs();
 	prefs.load();
 	Localization::instance().load(prefs.localization);
 	StyleManager::instance().loadLangs();
 	if (lightModeTest)
 		return testLightModeOnDarkDesktop();
+
+	std::printf("[settings of Notepad++]\n");
+	{
+		const QByteArray migrated = readAll(newSettings + QStringLiteral("/plugins/config/MigrationTest.ini"));
+		check(Npp::configDir() == newSettings && migrated == "path=" + (newSettings + QStringLiteral("/plugins/config/data.txt")).toUtf8() + "\n",
+		      "the settings of ~/.config/notepad++ are copied to ~/.config/linuxpad++ with the new paths", QString::fromUtf8(migrated));
+		check(readAll(newSettings + QStringLiteral("/backup/kept.txt")) == oldPathText, "the backups are copied as they are");
+		check(readAll(oldSettings + QStringLiteral("/plugins/config/MigrationTest.ini")) == oldPathText
+		      && !QFileInfo::exists(newSettings + QStringLiteral(".migrating")), "the settings of Notepad++ are left as they are");
+	}
 	std::printf("data dir: %s\nconfig dir: %s\n", qPrintable(Npp::dataDir()), qPrintable(Npp::configDir()));
 
 	// the plugins of the build tree and the plugin of the self test
 	qputenv("NPP_PLUGINS_DIR", QDir::cleanPath(QCoreApplication::applicationDirPath() + QStringLiteral("/../test-plugins")).toLocal8Bit());
+	// the plugins the checks are about: others change the editor (XBrackets, IndentByFold...)
+	qputenv("NPP_PLUGINS_ONLY", "NppTestPlugin:mimeTools:NppConverter:nppAutoDetectIndent:DiffChecker:JsonTools");
 	auto* w = new MainWindow;
 	w->resize(1100, 720);
 	w->loadPlugins(true);
@@ -1872,6 +1898,68 @@ int main(int argc, char** argv)
 			send(NPPM_MSGTOPLUGIN, reinterpret_cast<uintptr_t>(L"NppTestPlugin.dll"), reinterpret_cast<intptr_t>(&ci));
 			return r;
 		};
+		// WinInet of the SDK: an HTTP server of this process answers a plugin
+		{
+			QTcpServer server;
+			server.listen(QHostAddress::LocalHost);
+			QObject::connect(&server, &QTcpServer::newConnection, &server, [&server]
+			{
+				QTcpSocket* client = server.nextPendingConnection();
+				QObject::connect(client, &QTcpSocket::readyRead, client, [client]
+				{
+					const QByteArray request = client->readAll();
+					const bool found = request.startsWith("GET /hello ");
+					const QByteArray body = found ? QByteArray("hello inet!") : QByteArray("missing");
+					client->write((found ? QByteArray("HTTP/1.1 200 OK\r\n") : QByteArray("HTTP/1.1 404 Not Found\r\n"))
+						+ "Content-Type: text/plain\r\nContent-Length: " + QByteArray::number(body.size()) + "\r\nConnection: close\r\n\r\n" + body);
+					client->disconnectFromHost();
+				});
+			});
+			auto get = [&](const QString& path)
+			{
+				TestPluginInet r;
+				const std::wstring url = QStringLiteral("http://127.0.0.1:%1%2").arg(server.serverPort()).arg(path).toStdWString();
+				r.url = url.c_str();
+				sdk::CommunicationInfo ci{TestPluginInet::kGet, L"selftest", &r};
+				send(NPPM_MSGTOPLUGIN, reinterpret_cast<uintptr_t>(L"NppTestPlugin.dll"), reinterpret_cast<intptr_t>(&ci));
+				return r;
+			};
+			const TestPluginInet ok = get(QStringLiteral("/hello"));
+			check(ok.opened && ok.status == 200 && ok.contentLength == 11 && QByteArray(ok.body) == "hello inet!",
+				"plugins: WinInet downloads a page (InternetOpenUrl, HttpQueryInfo, InternetReadFile)",
+				QStringLiteral("%1 %2 %3 '%4'").arg(ok.opened).arg(ok.status).arg(ok.contentLength).arg(QString::fromUtf8(ok.body)));
+			const TestPluginInet missing = get(QStringLiteral("/missing"));
+			check(missing.opened && missing.status == 404 && QByteArray(missing.body) == "missing", "plugins: WinInet gives the HTTP status of an error page",
+				QStringLiteral("%1 %2").arg(missing.opened).arg(missing.status));
+		}
+		// SDK timers on a handle of the host and on no window: KillTimer stops them (Language Selector's timer on the
+		// Notepad++ window kept firing and opened its dialog again and again)
+		{
+			static int hostTicks = 0;
+			static int windowlessTicks = 0;
+			hostTicks = windowlessTicks = 0;
+			auto wait = [](int ms)
+			{
+				QElapsedTimer elapsed;
+				elapsed.start();
+				while (elapsed.elapsed() < ms)
+					QApplication::processEvents(QEventLoop::AllEvents, 10);
+			};
+			const UINT_PTR hostId = SetTimer(pm->nppHandle(), 9001, 10, [](HWND, UINT, UINT_PTR, DWORD) { ++hostTicks; });
+			const UINT_PTR windowlessId = SetTimer(nullptr, 0, 10, [](HWND, UINT, UINT_PTR, DWORD) { ++windowlessTicks; });
+			wait(100);
+			const bool fired = hostTicks > 0 && windowlessTicks > 0;
+			const BOOL killedHost = KillTimer(pm->nppHandle(), hostId);
+			const BOOL killedWindowless = KillTimer(nullptr, windowlessId);
+			const int hostAfterKill = hostTicks;
+			const int windowlessAfterKill = windowlessTicks;
+			wait(100);
+			check(fired && killedHost && killedWindowless && hostTicks == hostAfterKill && windowlessTicks == windowlessAfterKill
+				&& !KillTimer(pm->nppHandle(), hostId),
+				"plugins: KillTimer stops the timers of the Notepad++ window and of no window",
+				QStringLiteral("fired %1, killed %2 %3, ticks after kill %4->%5 %6->%7").arg(fired).arg(killedHost).arg(killedWindowless)
+					.arg(hostAfterKill).arg(hostTicks).arg(windowlessAfterKill).arg(windowlessTicks));
+		}
 		auto nppn = [](const TestPluginReport& r, unsigned int code) { return r.nppn[code - NPPN_FIRST]; };
 		auto idFrom = [](const TestPluginReport& r, unsigned int code) { return r.lastIdFrom[code - NPPN_FIRST]; };
 

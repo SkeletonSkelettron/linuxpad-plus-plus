@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+	<id>io.github.SkeletonSkelettron.LinuxPadPlusPlus</id>
+	<metadata_license>CC0-1.0</metadata_license>
+	<project_license>GPL-3.0-or-later</project_license>
+	<name>LinuxPad++</name>
+	<summary>Source code editor, the native Linux edition of Notepad++</summary>
+	<developer id="io.github.skeletonskelettron">
+		<name>LinuxPad++ contributors</name>
+	</developer>
+	<description>
+		<p>LinuxPad++ is Notepad++ with a native Qt interface for Linux: syntax highlighting, document tabs, split view, search and replace, macros and sessions.</p>
+		<p>More than 50 Notepad++ plugins are ported and bundled, among them ComparePlus, XML Tools, DSpellCheck, NppExec, Explorer, HEX-Editor, JSON Viewer and JSONTools.</p>
+	</description>
+	<url type="homepage">https://github.com/SkeletonSkelettron/linuxpad-plus-plus</url>
+	<launchable type="desktop-id">io.github.SkeletonSkelettron.LinuxPadPlusPlus.desktop</launchable>
+	<content_rating type="oars-1.1"/>
+	<releases>
+		<release version="8.9.9.1" date="2026-11-21"/>
+	</releases>
+</component>

@@ -398,7 +398,9 @@ BOOL InsertMenuItemW(HMENU hMenu, UINT item, BOOL byPosition, LPCMENUITEMINFOW m
 	QWidget* m = owner ? owner : widgetOfMenu(hMenu);
 	if (!m || !mii)
 		return FALSE;
-	const bool separator = ((mii->fMask & MIIM_FTYPE) || (mii->fMask & MIIM_TYPE)) && (mii->fType & MFT_SEPARATOR);
+	// an item without text, bitmap or submenu (fMask 0, as plugins insert separators) is drawn as a separator
+	const bool separator = (((mii->fMask & MIIM_FTYPE) || (mii->fMask & MIIM_TYPE)) && (mii->fType & MFT_SEPARATOR))
+		|| !(mii->fMask & (MIIM_STRING | MIIM_TYPE | MIIM_BITMAP | MIIM_SUBMENU));
 	UINT flags = separator ? MF_SEPARATOR : MF_STRING;
 	if ((mii->fMask & MIIM_SUBMENU) && mii->hSubMenu)
 		flags |= MF_POPUP;
@@ -591,4 +593,39 @@ HACCEL LoadAcceleratorsW(HINSTANCE, LPCWSTR name)
 	for (int i = 0; i < rc->count; ++i)
 		t->items.push_back(ACCEL{rc->items[i].fVirt, rc->items[i].key, rc->items[i].cmd});
 	return t;
+}
+
+BOOL IsMenu(HMENU menu)
+{
+	return w32::menuOf(menu) ? TRUE : FALSE;
+}
+
+BOOL GetMenuBarInfo(HWND hWnd, LONG idObject, LONG idItem, PMENUBARINFO info)
+{
+	if (!info || idObject != OBJID_MENU)
+		return FALSE;
+	QWidget* w = widgetOf(hWnd);
+	QMenuBar* bar = w ? w->window()->findChild<QMenuBar*>(QString(), Qt::FindDirectChildrenOnly) : nullptr;
+	if (!bar)
+		bar = w ? w->window()->findChild<QMenuBar*>() : nullptr;
+	info->hMenu = GetMenu(hWnd);
+	info->hwndMenu = nullptr;
+	info->fBarFocused = FALSE;
+	info->fFocused = FALSE;
+	if (!bar)
+	{
+		info->rcBar = RECT{};
+		return info->hMenu != nullptr;
+	}
+	QRect r = bar->rect();
+	if (idItem > 0)
+	{
+		const QList<QAction*> actions = bar->actions();
+		if (idItem > actions.size())
+			return FALSE;
+		r = bar->actionGeometry(actions[idItem - 1]);
+	}
+	const QPoint g = bar->mapToGlobal(r.topLeft());
+	info->rcBar = RECT{g.x(), g.y(), g.x() + r.width(), g.y() + r.height()};
+	return TRUE;
 }

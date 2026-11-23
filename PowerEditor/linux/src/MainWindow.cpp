@@ -281,7 +281,12 @@ namespace
 // ---------------------------------------------------------------------------
 MainWindow::MainWindow()
 {
-	setWindowIcon(QIcon(QStringLiteral(":/icons/npp.ico")));
+	{
+		QIcon icon;
+		for (int size : {16, 24, 32, 48, 64, 128, 256})
+			icon.addFile(QStringLiteral(":/linuxpad/linuxpad-plus-plus-%1.png").arg(size), QSize(size, size));
+		setWindowIcon(icon);
+	}
 	setAcceptDrops(true);
 	setDockOptions(QMainWindow::AnimatedDocks | QMainWindow::AllowTabbedDocks);
 
@@ -358,7 +363,11 @@ MainWindow::MainWindow()
 		connect(e, &EditView::contextMenuWanted, this, [this, v](const QPoint& pos)
 		{
 			setActiveView(v);
-			showEditorContextMenu(pos);
+			// like Notepad++: WM_CONTEXTMENU to its window (plugins may see it first), which shows the menu
+			if (_pluginsManager)
+				_pluginsManager->editorContextMenu(v, pos);
+			else
+				showEditorContextMenu(pos);
 		});
 		connect(e, &EditView::hideLinesChanged, this, [this, v](bool isHide, sptr_t location)
 		{
@@ -412,6 +421,8 @@ MainWindow::MainWindow()
 
 MainWindow::~MainWindow()
 {
+	if (_pluginsManager)
+		_pluginsManager->setDestroying();
 	// QWidget hides its docks after the menu and document state has been destroyed.
 	for (QDockWidget* dock : findChildren<QDockWidget*>())
 		disconnect(dock, &QDockWidget::visibilityChanged, this, nullptr);
@@ -588,6 +599,8 @@ void MainWindow::retranslateMenus()
 		QString text = _rcLabels.value(id);
 		if (id != IDM_FILE_OPEN_FOLDER && id != IDM_FILE_OPEN_CMD && id != IDM_FILE_DELETE)
 			text = l10n.command(id, text);
+		if (id == IDM_ABOUT)
+			text.replace(QStringLiteral("Notepad++"), Npp::appName()); // "About Notepad++" in every language
 		if (isDisplayOnlyShortcut(id))
 		{
 			for (const ShortcutTableEntry& s : kShortcutTable)
@@ -1376,12 +1389,14 @@ bool MainWindow::saveBuffer(Buffer* buf, bool saveAs, bool saveCopy, const QStri
 			Buffer* other = findBuffer(target);
 			if (other && other != buf)
 			{
-				QMessageBox::warning(this, QStringLiteral("Save"), QStringLiteral("The file \"%1\" is already opened in Notepad++.").arg(target));
+				QMessageBox::warning(this, QStringLiteral("Save"), QStringLiteral("The file \"%1\" is already opened in LinuxPad++.").arg(target));
 				return false;
 			}
 		}
 	}
 
+	// A FILEBEFORESAVE listener may change the document or its save format.
+	_pluginsManager->notifyBeforeSave(buf, saveCopy ? QString() : target);
 	const QByteArray utf8 = bufferText(buf);
 	bool lossy = false;
 	const QByteArray data = FileIO::encode(utf8, buf->unicode, buf->codepage, &lossy);
@@ -1395,7 +1410,6 @@ bool MainWindow::saveBuffer(Buffer* buf, bool saveAs, bool saveCopy, const QStri
 			return false;
 	}
 
-	_pluginsManager->notifyBuffer(NPPN_FILEBEFORESAVE, buf);
 	unwatch(buf);
 	if (!saveCopy)
 		backupOnSave(target);
@@ -1634,7 +1648,15 @@ void MainWindow::updateStatusBar()
 	if (!_current)
 		return;
 	EditView* v = _edit;
-	_sbLang->setText(_statusMessage.isEmpty() ? langDescription(_current) : _statusMessage);
+	// like Notepad++, the language part changes with the buffer or its language only: the text a
+	// plugin sets there (NPPM_SETSTATUSBAR) stays while the caret moves
+	const QString langText = _statusMessage.isEmpty() ? langDescription(_current) : _statusMessage;
+	const QString langKey = QString::number(reinterpret_cast<quintptr>(_current)) + QLatin1Char('|') + langText;
+	if (langKey != _sbLangKey)
+	{
+		_sbLangKey = langKey;
+		_sbLang->setText(langText);
+	}
 
 	const sptr_t length = v->ex(SCI_GETLENGTH);
 	const sptr_t lines = v->ex(SCI_GETLINECOUNT);
@@ -1691,6 +1713,13 @@ void MainWindow::updateMenuState()
 			if (a->data().toInt() > IDM_LANG_USER && a->data().toInt() < IDM_LANG_USER_LIMIT && a->text() == b->udlName)
 				langAction = a;
 		}
+	}
+	if (b->lang == L_EXTERNAL)
+	{
+		langAction = nullptr;
+		const int index = StyleManager::instance().externalLexerIndex(b->udlName);
+		if (index >= 0)
+			langAction = _actions.value(IDM_LANG_EXTERNAL + index);
 	}
 	if (langAction)
 		langAction->setChecked(true);
@@ -2042,6 +2071,9 @@ void MainWindow::command(int id)
 	auto it = _handlers.constFind(id);
 	if (it == _handlers.constEnd())
 		return;
+	// plugins that subclass the main window see WM_COMMAND first (XBrackets...)
+	if (_pluginsManager && _pluginsManager->routeCommand(id))
+		return;
 	if (_recording && isMacroRecordable(id))
 	{
 		MacroStep step;
@@ -2243,7 +2275,7 @@ void MainWindow::checkModifiedFiles(bool onlyPending)
 		{
 			activateBuffer(b);
 			QString msg = QStringLiteral("%1\n\nThis file has been modified by another program.\nDo you want to reload it").arg(b->path);
-			msg += b->dirty ? QStringLiteral(" and lose the changes made in Notepad++?") : QStringLiteral("?");
+			msg += b->dirty ? QStringLiteral(" and lose the changes made in LinuxPad++?") : QStringLiteral("?");
 			const auto answer = QMessageBox::question(this, QStringLiteral("Reload"), msg);
 			if (answer == QMessageBox::Yes)
 			{
@@ -2346,8 +2378,8 @@ void MainWindow::writeSession(const QString& path, bool withBackups)
 			f.append_attribute("startPos") = static_cast<long long>(pos.anchor);
 			f.append_attribute("endPos") = static_cast<long long>(pos.caret);
 			f.append_attribute("selMode") = 0;
-			// the name of the User Defined Language for L_USER (Notepad_plus::getLangDesc)
-			if (b->lang == L_USER && !b->udlName.isEmpty())
+			// the name of the User Defined Language for L_USER, of the lexer for L_EXTERNAL (Notepad_plus::getLangDesc)
+			if ((b->lang == L_USER || b->lang == L_EXTERNAL) && !b->udlName.isEmpty())
 				f.append_attribute("lang") = b->udlName.toUtf8().constData();
 			else
 				f.append_attribute("lang") = StyleManager::langInfo(b->lang).shortName;
@@ -2504,6 +2536,11 @@ bool MainWindow::readSession(const QString& path)
 				if (buf->lang == L_TEXT && UdlManager::instance().find(langName))
 				{
 					buf->lang = L_USER;
+					buf->udlName = langName;
+				}
+				else if (buf->lang == L_TEXT && StyleManager::instance().externalLexerIndex(langName) >= 0)
+				{
+					buf->lang = L_EXTERNAL; // a lexer plugin
 					buf->udlName = langName;
 				}
 				else if (buf->lang == L_TEXT && !buf->isUntitled())
@@ -3204,6 +3241,9 @@ void MainWindow::showEditorContextMenu(const QPoint& globalPos)
 			connect(named, &QAction::triggered, a, &QAction::trigger);
 		}
 	}
+	// WM_INITMENUPOPUP: plugins (spell checkers) add their items
+	if (_pluginsManager)
+		_pluginsManager->initMenuPopup(&menu);
 	menu.exec(globalPos);
 }
 
@@ -3950,7 +3990,11 @@ LangType MainWindow::langOfFile(const QString& path, QString* udlName) const
 			return L_USER;
 		}
 	}
-	return StyleManager::instance().langFromFileName(path);
+	QString external;
+	const LangType lang = StyleManager::instance().langFromFileName(path, &external);
+	if (lang == L_EXTERNAL && udlName)
+		*udlName = external; // the lexer of a lexer plugin
+	return lang;
 }
 
 QString MainWindow::langDescription(const Buffer* b) const
@@ -3958,6 +4002,8 @@ QString MainWindow::langDescription(const Buffer* b) const
 	// Notepad_plus::getLangDesc()
 	if (b->lang == L_USER && !b->udlName.isEmpty())
 		return QStringLiteral("User Defined language file - ") + b->udlName;
+	if (b->lang == L_EXTERNAL && !b->udlName.isEmpty())
+		return b->udlName; // the name of the lexer plugin, like Notepad++
 	return QString::fromUtf8(StyleManager::langInfo(b->lang).longName);
 }
 
@@ -4032,6 +4078,44 @@ void MainWindow::rebuildUdlMenu()
 		_langGroup->addAction(a);
 		_languageMenu->insertAction(userDefined, a);
 		_handlers.insert(id, [this, name] { languageSet(L_USER, name); });
+		connect(a, &QAction::triggered, this, [this, id] { command(id); });
+	}
+	if (_current)
+		updateMenuState();
+}
+
+void MainWindow::addExternalLexerMenu()
+{
+	// Notepad_plus::init(): each lexer of the lexer plugins in the Language menu, in the
+	// alphabetical order of its top level items
+	if (!_languageMenu)
+		return;
+	const auto& lexers = StyleManager::instance().externalLexers();
+	for (int i = 0; i < static_cast<int>(lexers.size()); ++i)
+	{
+		const int id = IDM_LANG_EXTERNAL + i;
+		if (id > IDM_LANG_EXTERNAL_LIMIT || _actions.contains(id))
+			continue;
+		const QString name = lexers[static_cast<size_t>(i)].name;
+		auto* a = new QAction(name, this);
+		a->setData(id);
+		a->setCheckable(true);
+		_langGroup->addAction(a);
+		QAction* before = nullptr;
+		bool first = true;
+		for (QAction* item : _languageMenu->actions())
+		{
+			const QString text = Npp::stripAmpersand(item->menu() ? item->menu()->title() : item->text());
+			if (!first && !item->isSeparator() && text.compare(name, Qt::CaseInsensitive) > 0)
+			{
+				before = item;
+				break;
+			}
+			first = false;
+		}
+		_languageMenu->insertAction(before, a);
+		_actions.insert(id, a);
+		_handlers.insert(id, [this, name] { languageSet(L_EXTERNAL, name); });
 		connect(a, &QAction::triggered, this, [this, id] { command(id); });
 	}
 	if (_current)
@@ -4527,6 +4611,7 @@ void MainWindow::loadPlugins(bool enabled)
 	{
 		_pluginsManager->loadPlugins();
 		_pluginsManager->addMenus();
+		addExternalLexerMenu();
 	}
 	_pluginsManager->notifyToolbar();
 }

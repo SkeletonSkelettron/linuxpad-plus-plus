@@ -40,7 +40,7 @@ public:
 	sptr_t execute(unsigned int msg, uptr_t w = 0, sptr_t l = 0) const { return send(msg, w, l); }
 
 	void applyPrefs();
-	void defineDocType(LangType lang, const QString& udlName = QString()); // udlName: the User Defined Language of L_USER
+	void defineDocType(LangType lang, const QString& udlName = QString()); // udlName: the User Defined Language of L_USER, the lexer of L_EXTERNAL
 	const QString& udlName() const { return _udlName; }
 	LangType currentLang() const { return _lang; }
 	void updateLineNumberWidth();

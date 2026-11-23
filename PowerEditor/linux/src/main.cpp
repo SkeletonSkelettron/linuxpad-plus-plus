@@ -83,7 +83,7 @@ namespace
 
 	QString serverName()
 	{
-		return QStringLiteral("notepad++-%1").arg(QString::fromLocal8Bit(qgetenv("USER")));
+		return QStringLiteral("linuxpad++-%1").arg(QString::fromLocal8Bit(qgetenv("USER")));
 	}
 
 	QByteArray encodeRequest(const CmdLine& c)
@@ -130,16 +130,16 @@ namespace
 
 int main(int argc, char** argv)
 {
-	QApplication::setApplicationName(QStringLiteral("notepad++"));
-	QApplication::setApplicationDisplayName(QStringLiteral("Notepad++"));
+	QApplication::setApplicationName(QStringLiteral("linuxpad++"));
+	QApplication::setApplicationDisplayName(QStringLiteral("LinuxPad++"));
 	QApplication::setApplicationVersion(Npp::version());
-	QApplication::setDesktopFileName(qEnvironmentVariable("FLATPAK_ID", QStringLiteral("notepad-plus-plus")));
+	QApplication::setDesktopFileName(qEnvironmentVariable("FLATPAK_ID", QStringLiteral("linuxpad-plus-plus")));
 	QApplication app(argc, argv);
 
 	CmdLine cmd = parse(QApplication::arguments());
 	if (cmd.help)
 	{
-		std::printf("Usage: notepad++ [--help] [-multiInst] [-nosession] [-noPlugin] [-pluginMessage=message]\n"
+		std::printf("Usage: linuxpad++ [--help] [-multiInst] [-nosession] [-noPlugin] [-pluginMessage=message]\n"
 			"                 [-lLanguage] [-nLineNumber] [-cColumnNumber] [-ro] [-alwaysOnTop] [filePath...]\n");
 		return 0;
 	}

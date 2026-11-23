@@ -20,6 +20,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cwchar>
+#include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 
 #include <QDir>
 #include <QFile>
@@ -28,6 +31,9 @@
 #include <sys/stat.h>
 
 // the real glibc functions, not the macros of the SDK
+#include <fcntl.h>
+#include <unistd.h>
+
 #include "W32Internal.h"
 #undef swprintf
 #undef vswprintf
@@ -295,6 +301,11 @@ FILE* npp_wfopen(const wchar_t* path, const wchar_t* mode)
 	return std::fopen(npp_path(path).c_str(), m.toLatin1().constData());
 }
 
+int _wopen(const wchar_t* path, int flags, int mode)
+{
+	return ::open(npp_path(path).c_str(), flags, mode);
+}
+
 int npp_wremove(const wchar_t* path)
 {
 	return std::remove(npp_path(path).c_str());
@@ -308,6 +319,30 @@ int npp_wrename(const wchar_t* from, const wchar_t* to)
 int npp_wmkdir(const wchar_t* path)
 {
 	return ::mkdir(npp_path(path).c_str(), 0755);
+}
+
+int npp_wchdir(const wchar_t* path)
+{
+	return ::chdir(npp_path(path).c_str());
+}
+
+wchar_t* npp_wgetcwd(wchar_t* buffer, int len)
+{
+	const std::wstring dir = QDir::currentPath().toStdWString();
+	if (!buffer) {
+		const size_t size = std::max<size_t>(dir.size() + 1, len > 0 ? static_cast<size_t>(len) : 0);
+		buffer = static_cast<wchar_t*>(std::malloc(size * sizeof(wchar_t)));
+		if (!buffer)
+			return nullptr;
+		wcscpy(buffer, dir.c_str());
+		return buffer;
+	}
+	if (len <= 0 || dir.size() + 1 > static_cast<size_t>(len)) {
+		errno = ERANGE;
+		return nullptr;
+	}
+	wcscpy(buffer, dir.c_str());
+	return buffer;
 }
 
 wchar_t* npp_wgetenv(const wchar_t* name)

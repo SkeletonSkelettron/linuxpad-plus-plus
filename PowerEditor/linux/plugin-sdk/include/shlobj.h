@@ -20,6 +20,8 @@
 
 #include <windows.h>
 #include <shellapi.h>
+#include <commctrl.h> // like shlobj_core.h of Windows
+#include <ole2.h>
 
 #ifndef RC_INVOKED
 #define CSIDL_DESKTOP 0x0000
@@ -42,6 +44,7 @@
 #define CSIDL_FLAG_CREATE 0x8000
 #define SHGFP_TYPE_CURRENT 0
 HRESULT SHGetFolderPathW(HWND hWnd, int csidl, HANDLE token, DWORD flags, LPWSTR path);
+HRESULT SHGetMalloc(LPMALLOC* malloc); // frees the PIDLs of SHBrowseForFolder
 BOOL SHGetSpecialFolderPathW(HWND hWnd, LPWSTR path, int csidl, BOOL create);
 #define SHGetFolderPath SHGetFolderPathW
 #define SHGetSpecialFolderPath SHGetSpecialFolderPathW
@@ -101,8 +104,56 @@ LPITEMIDLIST SHBrowseForFolderW(LPBROWSEINFOW bi);
 BOOL SHGetPathFromIDListW(LPCITEMIDLIST pidl, LPWSTR path);
 void ILFree(LPITEMIDLIST pidl);
 HRESULT SHILCreateFromPath(PCWSTR path, LPITEMIDLIST* pidl, DWORD* attributes);
+HRESULT SHGetFolderLocation(HWND hWnd, int csidl, HANDLE token, DWORD reserved, LPITEMIDLIST* pidl);
 HRESULT SHParseDisplayName(PCWSTR name, void* bc, LPITEMIDLIST* pidl, ULONG sfgaoIn, ULONG* sfgaoOut);
 HRESULT SHOpenFolderAndSelectItems(LPCITEMIDLIST folder, UINT count, LPCITEMIDLIST* items, DWORD flags);
 #define SHBrowseForFolder SHBrowseForFolderW
 #define SHGetPathFromIDList SHGetPathFromIDListW
+
+// files of drag and drop and of the clipboard (CF_HDROP): a DROPFILES then the paths, each ended by a nul, and a nul
+struct DROPFILES
+{
+	DWORD pFiles; // offset of the paths
+	POINT pt;
+	BOOL fNC;
+	BOOL fWide;
+};
+typedef DROPFILES* LPDROPFILES;
+#define CFSTR_PREFERREDDROPEFFECT L"Preferred DropEffect"
+#define CFSTR_PERFORMEDDROPEFFECT L"Performed DropEffect"
+#define CFSTR_PASTESUCCEEDED L"Paste Succeeded"
+#define CFSTR_SHELLIDLIST L"Shell IDList Array"
+#define CFSTR_FILENAMEW L"FileNameW"
+#define CFSTR_FILENAME CFSTR_FILENAMEW
+
+// the drag images of the shell: none here (CoCreateInstance(CLSID_DragDropHelper) fails)
+inline const CLSID CLSID_DragDropHelper = {0x4657278A, 0x411B, 0x11D2, {0x83, 0x9A, 0x00, 0xC0, 0x4F, 0xD9, 0x18, 0xD0}};
+inline const IID IID_IDropTargetHelper = {0x4657278B, 0x411B, 0x11D2, {0x83, 0x9A, 0x00, 0xC0, 0x4F, 0xD9, 0x18, 0xD0}};
+inline const IID IID_IDragSourceHelper = {0xDE5BF786, 0x477A, 0x11D2, {0x83, 0x9D, 0x00, 0xC0, 0x4F, 0xD9, 0x18, 0xD0}};
+struct SHDRAGIMAGE
+{
+	SIZE sizeDragImage;
+	POINT ptOffset;
+	HBITMAP hbmpDragImage;
+	COLORREF crColorKey;
+};
+typedef SHDRAGIMAGE* LPSHDRAGIMAGE;
+struct IDropTargetHelper : public IUnknown
+{
+	virtual HRESULT STDMETHODCALLTYPE DragEnter(HWND hwndTarget, IDataObject* pDataObject, POINT* ppt, DWORD dwEffect) = 0;
+	virtual HRESULT STDMETHODCALLTYPE DragLeave() = 0;
+	virtual HRESULT STDMETHODCALLTYPE DragOver(POINT* ppt, DWORD dwEffect) = 0;
+	virtual HRESULT STDMETHODCALLTYPE Drop(IDataObject* pDataObject, POINT* ppt, DWORD dwEffect) = 0;
+	virtual HRESULT STDMETHODCALLTYPE Show(BOOL fShow) = 0;
+	static REFIID iid() { return IID_IDropTargetHelper; }
+};
+struct IDragSourceHelper : public IUnknown
+{
+	virtual HRESULT STDMETHODCALLTYPE InitializeFromBitmap(LPSHDRAGIMAGE pshdi, IDataObject* pDataObject) = 0;
+	virtual HRESULT STDMETHODCALLTYPE InitializeFromWindow(HWND hwnd, POINT* ppt, IDataObject* pDataObject) = 0;
+	static REFIID iid() { return IID_IDragSourceHelper; }
+};
 #endif
+
+// like shlobj_core.h of Windows: IShellItem, IFileDialog...
+#include <shobjidl.h>

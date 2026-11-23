@@ -23,14 +23,19 @@
 #include <string>
 #include <vector>
 
+#include <QApplication>
 #include <QColor>
+#include <QMetaObject>
+#include <type_traits>
 #include <QFont>
 #include <QIcon>
 #include <QPointer>
 #include <QString>
+#include <QStringList>
 #include <QWidget>
 
 class QEventLoop;
+class QMimeData;
 class QPainter;
 class QTimer;
 
@@ -56,7 +61,7 @@ namespace w32
 	enum class Kind
 	{
 		Dialog, Custom, Button, Edit, Static, ComboBox, ListBox, ScrollBar,
-		ListView, TreeView, Tab, Trackbar, UpDown, Progress, Tooltip, Link, Header, StatusBar, Scintilla, Generic
+		ListView, TreeView, Tab, Trackbar, UpDown, Progress, Tooltip, Link, Header, StatusBar, HotKey, Toolbar, Rebar, Scintilla, Generic
 	};
 
 	struct Subclass
@@ -114,6 +119,9 @@ namespace w32
 		bool redraw = true;
 		HRGN region = nullptr;
 		QPainter* painter = nullptr; // during WM_PAINT
+		QSize lastSize; // size of the last WM_SIZE (dialogs: their size at creation)
+		DWORD eventMask = 0;   // rich edits: EM_SETEVENTMASK
+		DWORD richOptions = 0; // rich edits: EM_SETOPTIONS (without ECO_READONLY)
 	};
 
 	Window* win(HWND h);         // the window of a handle made here, nullptr otherwise
@@ -135,6 +143,26 @@ namespace w32
 	QWidget* createControl(Kind kind, const std::wstring& cls, DWORD style, QWidget* parent, const QString& text, int textId, Window** out);
 	Kind kindOfClass(const std::wstring& cls);
 	void setupCommonControl(Window* w);
+
+	// rich edit controls (RichEdit.cpp): QPlainTextEdit with the property "nppRichEdit"
+	bool isRichEdit(QWidget* w);
+	LRESULT richEditProc(Window* w, UINT msg, WPARAM wParam, LPARAM lParam); // -0x7FFFFFFF: not handled
+	void richEditSelChanged(Window* w); // EN_SELCHANGE
+	bool richEditFilter(Window* w, QObject* obj, QEvent* e); // EN_MSGFILTER: true eats the event
+
+	// toolbars and rebars (Toolbar.cpp)
+	void setupToolbar(Window* w);
+	void setupRebar(Window* w);
+	LRESULT toolbarProc(Window* w, UINT msg, WPARAM wParam, LPARAM lParam); // -0x7FFFFFFF: not handled
+	LRESULT rebarProc(Window* w, UINT msg, WPARAM wParam, LPARAM lParam);
+
+	// OLE drag and drop, files of the clipboard (Ole.cpp)
+	bool& dragDone(); // set by DoDragDrop: a drag ran
+	HGLOBAL makeDropFiles(const QStringList& files, POINT pt); // HDROP: DROPFILES and the paths (GlobalAlloc)
+	QStringList dropFilesList(const void* drop);
+	void setFilesMime(QMimeData* md, const QStringList& files, DWORD effect); // URLs, and cut/copy when effect
+	void setFilesEffect(QMimeData* md, DWORD effect); // DROPEFFECT_MOVE: cut
+	DWORD filesEffectOf(const QMimeData* md); // CFSTR_PREFERREDDROPEFFECT of files
 
 	// was the default procedure of a control reached for a key or mouse message?
 	extern thread_local bool g_defaultReached;
@@ -200,6 +228,26 @@ namespace w32
 	int vkFromQt(int qtKey, quint32 nativeVk = 0);
 	int qtKeyFromVk(int vk);
 	LPARAM keyLParam(int repeat, bool up, bool extended);
+
+	// ---- COM objects (FileDialog.cpp): CoCreateInstance of CLSID_FileOpenDialog / CLSID_FileSaveDialog
+	HRESULT createShellObject(REFCLSID clsid, REFIID iid, void** out);
+
+	// ---- threads: what touches widgets runs on the GUI thread (the caller waits) --------
+	bool isGuiThread();
+	template <typename F> auto onGui(F&& f) -> decltype(f())
+	{
+		using R = decltype(f());
+		if (isGuiThread())
+			return f();
+		if constexpr (std::is_void_v<R>)
+			QMetaObject::invokeMethod(qApp, [&] { f(); }, Qt::BlockingQueuedConnection);
+		else
+		{
+			R r{};
+			QMetaObject::invokeMethod(qApp, [&] { r = f(); }, Qt::BlockingQueuedConnection);
+			return r;
+		}
+	}
 
 	// ---- the plugin's main window handle (for the owners of plugin windows) ------------
 	HWND nppHandle();

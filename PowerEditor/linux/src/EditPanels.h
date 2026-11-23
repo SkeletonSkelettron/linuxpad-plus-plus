@@ -30,7 +30,7 @@ class QTreeWidget;
 
 // MIME type of Edit > Paste Special > Copy Binary Content (CF_NPPTEXTLEN on Windows):
 // the exact bytes of the selection, NUL characters included
-inline constexpr const char* kNppBinaryMime = "application/x-notepad-plus-plus-binary";
+inline constexpr const char* kNppBinaryMime = "application/x-linuxpad-plus-plus-binary";
 
 class CharacterPanel : public QWidget
 {
